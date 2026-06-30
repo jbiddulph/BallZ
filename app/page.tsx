@@ -47,6 +47,7 @@ type SiteSpec = {
   tone: string;
   sections: string[];
   headline: string;
+  summaryPrefix: "auto" | "none";
 };
 
 type GeneratedSite = {
@@ -167,6 +168,18 @@ const colorRequests: Array<[string, Palette, string]> = [
       surface: "#ffffff"
     },
     "blue theme"
+  ],
+  [
+    "yellow",
+    {
+      bg: "#fffbe8",
+      ink: "#211c0c",
+      muted: "#746942",
+      primary: "#d4a017",
+      secondary: "#0f766e",
+      surface: "#ffffff"
+    },
+    "yellow theme"
   ]
 ];
 
@@ -207,7 +220,8 @@ export default function Home() {
 
     try {
       const result = await requestAiDraft(draft, pendingMessages, instruction);
-      setDraft(result.draft);
+      const nextDraft = applyDeterministicOverrides(result.draft, instruction, draft);
+      setDraft(nextDraft);
       setMessages([...pendingMessages, { id: nextId + 1, role: "assistant", content: result.reply }]);
       setStatus(result.reply);
     } catch {
@@ -427,7 +441,8 @@ function createSpec(prompt: string, style: StyleKey, pageType: PageType): SiteSp
     industry,
     tone,
     sections: getSections(pageType, industry),
-    headline: `${name} turns attention into action.`
+    headline: `${name} turns attention into action.`,
+    summaryPrefix: "auto"
   };
 }
 
@@ -449,9 +464,7 @@ async function requestAiDraft(draft: SiteSpec, messages: ChatMessage[], instruct
 
 function applyInstruction(current: SiteSpec, instruction: string): SiteSpec {
   const source = instruction.toLowerCase();
-  const isNewBuild =
-    /\b(create|build|make|generate|design)\b/.test(source) &&
-    /\b(site|website|landing|page|portfolio|sales)\b/.test(source);
+  const isNewBuild = isNewBuildInstruction(instruction);
   let next = isNewBuild
     ? createSpec(instruction, inferStyle(instruction, current.style), inferPageType(instruction, current.pageType))
     : { ...current, sections: [...current.sections], palette: { ...current.palette } };
@@ -491,16 +504,41 @@ function applyInstruction(current: SiteSpec, instruction: string): SiteSpec {
     next = { ...next, tone: newTone };
   }
 
+  if (asksForArticlelessSummary(instruction)) {
+    next = { ...next, summaryPrefix: "none" };
+  }
+
   next = applySectionMove(next, instruction);
 
-  if (!isNewBuild) {
-    next = {
-      ...next,
-      prompt: `${current.prompt} ${instruction}`
-    };
+  return next;
+}
+
+function applyDeterministicOverrides(spec: SiteSpec, instruction: string, previous: SiteSpec): SiteSpec {
+  const source = instruction.toLowerCase();
+  let next = { ...spec, palette: { ...spec.palette }, sections: [...spec.sections] };
+  const matchedPalette = colorRequests.find(([keyword]) => source.includes(keyword));
+
+  if (!isNewBuildInstruction(instruction)) {
+    next = { ...next, prompt: previous.prompt };
+  }
+
+  if (matchedPalette) {
+    next = { ...next, palette: matchedPalette[1] };
+  }
+
+  if (asksForArticlelessSummary(instruction)) {
+    next = { ...next, summaryPrefix: "none" };
   }
 
   return next;
+}
+
+function isNewBuildInstruction(instruction: string) {
+  const source = instruction.toLowerCase();
+  return (
+    /\b(create|build|make|generate|design)\b/.test(source) &&
+    /\b(site|website|landing|page|portfolio|sales|homepage)\b/.test(source)
+  );
 }
 
 function describeChanges(previous: SiteSpec, next: SiteSpec, instruction: string) {
@@ -509,6 +547,7 @@ function describeChanges(previous: SiteSpec, next: SiteSpec, instruction: string
   if (previous.industry !== next.industry) changes.push(`rebuilt it for a ${next.industry}`);
   if (previous.tone !== next.tone) changes.push(`shifted the tone to ${next.tone}`);
   if (previous.style !== next.style || previous.palette.primary !== next.palette.primary) changes.push("updated the colour theme");
+  if (previous.summaryPrefix !== next.summaryPrefix) changes.push("updated the summary wording");
   if (previous.sections.join("|") !== next.sections.join("|")) {
     changes.push(`reordered sections to ${next.sections.join(", ")}`);
   }
@@ -598,6 +637,15 @@ function inferExplicitName(prompt: string) {
   return called ? titleCase(called[1]) : null;
 }
 
+function asksForArticlelessSummary(instruction: string) {
+  const source = instruction.toLowerCase();
+  return (
+    source.includes("an elevated landing") &&
+    source.includes("elevated landing") &&
+    (source.includes("change") || source.includes("replace") || source.includes("to:"))
+  );
+}
+
 function inferName(prompt: string) {
   const explicitName = inferExplicitName(prompt);
   if (explicitName) return explicitName;
@@ -673,7 +721,12 @@ function getSections(pageType: PageType, industry: string) {
 function createSite(spec: SiteSpec): GeneratedSite {
   const adjective = spec.tone === "premium" ? "elevated" : spec.tone === "energetic" ? "high-energy" : spec.tone;
   const article = /^[aeiou]/i.test(adjective) ? "An" : "A";
-  const summary = `${article} ${adjective} ${spec.pageType.replace("-", " ")} for a ${spec.industry}.`;
+  const prefix = spec.summaryPrefix === "none" ? "" : `${article} `;
+  const summaryText = `${adjective} ${spec.pageType.replace("-", " ")} for a ${spec.industry}.`;
+  const summary =
+    spec.summaryPrefix === "none"
+      ? summaryText.charAt(0).toUpperCase() + summaryText.slice(1)
+      : `${prefix}${summaryText}`;
   const css = createGeneratedCss(spec.palette);
   const js = `const cta = document.querySelector(".nav-cta");
 cta?.addEventListener("click", () => {

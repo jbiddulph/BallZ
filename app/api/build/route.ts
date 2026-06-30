@@ -23,6 +23,7 @@ type SiteSpec = {
   tone: string;
   sections: string[];
   headline: string;
+  summaryPrefix: "auto" | "none";
 };
 
 type ChatMessage = {
@@ -70,9 +71,21 @@ const siteUpdateSchema = {
           maxItems: 6,
           items: { type: "string", minLength: 1, maxLength: 40 }
         },
-        headline: { type: "string", minLength: 1, maxLength: 110 }
+        headline: { type: "string", minLength: 1, maxLength: 110 },
+        summaryPrefix: { type: "string", enum: ["auto", "none"] }
       },
-      required: ["prompt", "style", "pageType", "palette", "name", "industry", "tone", "sections", "headline"]
+      required: [
+        "prompt",
+        "style",
+        "pageType",
+        "palette",
+        "name",
+        "industry",
+        "tone",
+        "sections",
+        "headline",
+        "summaryPrefix"
+      ]
     }
   },
   required: ["reply", "draft"]
@@ -103,7 +116,7 @@ export async function POST(request: Request) {
       {
         role: "system",
         content:
-          "You are the website builder inside SiteForge. Update the current website draft to satisfy the user's latest instruction. Preserve good parts of the current draft unless the user asks for a new direction. If the user asks to change colors, update the palette. If they ask to move sections, reorder the sections array. If they ask for a different business, rewrite the site spec. Reply concisely with what changed."
+          "You are the website builder inside SiteForge. Update the current website draft to satisfy the user's latest instruction. Preserve good parts of the current draft unless the user asks for a new direction. If the user asks to change colors, update the palette. If they ask to move sections, reorder the sections array. If they ask for a different business, rewrite the site spec. The prompt field is public hero body copy; do not append edit instructions, API key comments, deployment notes, or chat meta into it. If the user asks to remove the leading article from the short summary, set summaryPrefix to none. Reply concisely with what changed."
       },
       {
         role: "user",
@@ -149,6 +162,7 @@ function normalizeDraft(next: SiteSpec, fallback: SiteSpec): SiteSpec {
     industry: next.industry || fallback.industry,
     tone: next.tone || fallback.tone,
     sections: next.sections?.length ? next.sections.slice(0, 6) : fallback.sections,
-    headline: next.headline || fallback.headline
+    headline: next.headline || fallback.headline,
+    summaryPrefix: next.summaryPrefix || fallback.summaryPrefix
   };
 }
