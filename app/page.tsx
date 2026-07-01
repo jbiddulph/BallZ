@@ -741,26 +741,29 @@ export default function Home() {
     setMessages(pendingMessages);
     setChatInput("");
     setIsSending(true);
-    setStatus("Updating the current draft...");
+    const optimisticDraft = applyInstruction(draft, instruction);
+    setDraft(optimisticDraft);
+    setPreviewSource(previewTarget ? `${titleCase(previewTarget.type)}: ${previewTarget.label}` : "Builder chat");
+    setStatus("Updating preview now, then saving the refined draft...");
 
     try {
       const result = await requestAiDraft(draft, pendingMessages, instruction);
       const nextDraft = applyDeterministicOverrides(result.draft, instruction, draft);
-      const persistence = await persistPreviewDraft(nextDraft);
       setDraft(nextDraft);
-      setPreviewSource(previewTarget ? `${titleCase(previewTarget.type)}: ${previewTarget.label}` : "Builder chat");
       setMessages([...pendingMessages, { id: nextId + 1, role: "assistant", content: result.reply }]);
-      setStatus([result.reply, persistence].filter(Boolean).join(" "));
+      setStatus(result.reply);
+
+      const persistence = await persistPreviewDraft(nextDraft);
+      if (persistence) setStatus(`${result.reply} ${persistence}`);
       if (persistence) await loadContent();
     } catch (error) {
-      const nextDraft = applyInstruction(draft, instruction);
       const diagnostic = error instanceof Error ? error.message : "AI service is unavailable.";
-      const reply = `${describeChanges(draft, nextDraft, instruction)} AI edit failed: ${diagnostic}`;
-      const persistence = await persistPreviewDraft(nextDraft);
-      setDraft(nextDraft);
-      setPreviewSource(previewTarget ? `${titleCase(previewTarget.type)}: ${previewTarget.label}` : "Builder chat");
+      const reply = `${describeChanges(draft, optimisticDraft, instruction)} AI edit failed: ${diagnostic}`;
       setMessages([...pendingMessages, { id: nextId + 1, role: "assistant", content: reply }]);
-      setStatus([reply, persistence].filter(Boolean).join(" "));
+      setStatus(reply);
+
+      const persistence = await persistPreviewDraft(optimisticDraft);
+      if (persistence) setStatus(`${reply} ${persistence}`);
       if (persistence) await loadContent();
     } finally {
       setIsSending(false);
@@ -1270,6 +1273,7 @@ export default function Home() {
             </div>
             <iframe
               className={device === "mobile" ? "mobile" : ""}
+              key={generated.html}
               sandbox="allow-scripts"
               srcDoc={generated.html}
               title="Generated website preview"
@@ -1389,6 +1393,21 @@ function applyInstruction(current: SiteSpec, instruction: string): SiteSpec {
     next = { ...next, tone: newTone };
   }
 
+  const replacement = inferTextReplacement(instruction);
+  if (replacement) {
+    next = applyTextReplacement(next, replacement.from, replacement.to);
+  }
+
+  const requestedHeadline = inferRequestedCopy(instruction, ["headline", "heading", "hero title", "main title"]);
+  if (requestedHeadline) {
+    next = { ...next, headline: requestedHeadline };
+  }
+
+  const requestedBody = inferRequestedCopy(instruction, ["hero copy", "body copy", "paragraph", "description", "intro text", "lede"]);
+  if (requestedBody) {
+    next = { ...next, prompt: requestedBody };
+  }
+
   if (asksForArticlelessSummary(instruction)) {
     next = { ...next, summaryPrefix: "none" };
   }
@@ -1404,7 +1423,8 @@ function applyDeterministicOverrides(spec: SiteSpec, instruction: string, previo
   const matchedPalette = colorRequests.find(([keyword]) => source.includes(keyword));
 
   if (!isNewBuildInstruction(instruction)) {
-    next = { ...next, prompt: previous.prompt };
+    const aiChangedPrompt = next.prompt !== previous.prompt && !containsAppChrome(next.prompt);
+    next = { ...next, prompt: aiChangedPrompt ? next.prompt : previous.prompt };
   }
 
   if (matchedPalette) {
@@ -1415,7 +1435,7 @@ function applyDeterministicOverrides(spec: SiteSpec, instruction: string, previo
     next = { ...next, summaryPrefix: "none" };
   }
 
-  return next;
+  return applyInstruction(next, instruction);
 }
 
 function sanitizeDraft(spec: SiteSpec, previous: SiteSpec): SiteSpec {
@@ -1592,6 +1612,74 @@ function asksForArticlelessSummary(instruction: string) {
     source.includes("elevated landing") &&
     (source.includes("change") || source.includes("replace") || source.includes("to:"))
   );
+}
+
+function inferTextReplacement(instruction: string) {
+  const patterns = [
+    /(?:change|replace|update)\s+["'“”]?(.+?)["'“”]?\s+(?:to|with)\s*["'“”]?(.+?)["'“”]?(?:\.|$)/i,
+    /from\s+["'“”]?(.+?)["'“”]?\s+to\s+["'“”]?(.+?)["'“”]?(?:\.|$)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = instruction.match(pattern);
+    if (!match) continue;
+
+    const from = cleanReplacementText(match[1]);
+    const to = cleanReplacementText(match[2]);
+    if (from && to && from.toLowerCase() !== to.toLowerCase()) return { from, to };
+  }
+
+  return null;
+}
+
+function cleanReplacementText(text: string) {
+  return cleanText(text)
+    .replace(/^the\s+/i, "")
+    .replace(/^text\s+/i, "")
+    .replace(/^copy\s+/i, "")
+    .replace(/^paragraph\s+/i, "")
+    .replace(/^headline\s+/i, "")
+    .replace(/^title\s+/i, "")
+    .replace(/^:/, "")
+    .replace(/[.?!]$/, "")
+    .trim();
+}
+
+function applyTextReplacement(spec: SiteSpec, from: string, to: string): SiteSpec {
+  return {
+    ...spec,
+    prompt: replaceText(spec.prompt, from, to),
+    name: replaceText(spec.name, from, to),
+    industry: replaceText(spec.industry, from, to),
+    tone: replaceText(spec.tone, from, to),
+    headline: replaceText(spec.headline, from, to),
+    sections: spec.sections.map((section) => replaceText(section, from, to))
+  };
+}
+
+function replaceText(value: string, from: string, to: string) {
+  if (!from) return value;
+  const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return value.replace(new RegExp(escaped, "gi"), to);
+}
+
+function inferRequestedCopy(instruction: string, fieldTerms: string[]) {
+  const source = instruction.toLowerCase();
+  if (!fieldTerms.some((term) => source.includes(term))) return null;
+
+  const patterns = [
+    /(?:to|as|say|says|should be|make it)\s*["'“”]([^"'“”]{3,180})["'“”]/i,
+    /:\s*["'“”]?([^"'“”]{3,180})["'“”]?\s*$/i,
+    /\b(?:to|as|say|says|should be|make it)\s+([^.!?]{3,180})(?:[.!?]|$)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = instruction.match(pattern);
+    const copy = match ? cleanText(match[1]) : "";
+    if (copy && !containsAppChrome(copy)) return copy;
+  }
+
+  return null;
 }
 
 function inferName(prompt: string) {
