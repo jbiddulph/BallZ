@@ -813,9 +813,18 @@ function createSite(spec: SiteSpec): GeneratedSite {
   const safePrompt = escapeHtml(safeSpecForPreview.prompt);
   const safeSummary = escapeHtml(summary);
   const safeSections = safeSpecForPreview.sections.map((section) => escapeHtml(section));
-  const js = `const cta = document.querySelector(".nav-cta");
-cta?.addEventListener("click", () => {
-  document.body.classList.add("cta-clicked");
+  const js = `document.addEventListener("click", (event) => {
+  const link = event.target.closest("a[href^='#']");
+  if (!link) return;
+
+  event.preventDefault();
+  const targetId = link.getAttribute("href").slice(1);
+  if (!targetId) return;
+
+  document.getElementById(targetId)?.scrollIntoView({
+    behavior: "smooth",
+    block: "start"
+  });
 });`;
 
   const html = `<!doctype html>
@@ -830,14 +839,7 @@ ${css}
   </head>
   <body>
     <header class="site-header">
-      <a class="logo" href="#">${safeName}</a>
-      <nav aria-label="Primary">
-        ${safeSections
-          .slice(0, 3)
-          .map((section) => `<a href="#${section.toLowerCase().replace(/\s+/g, "-")}">${section}</a>`)
-          .join("\n        ")}
-      </nav>
-      <a class="nav-cta" href="#contact">Start</a>
+      <span class="logo">${safeName}</span>
     </header>
 
     <main>
@@ -967,27 +969,17 @@ function createGeneratedCss(palette: Palette) {
         min-height: 76px;
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 18px;
+        justify-content: flex-start;
       }
       .logo {
+        display: inline-flex;
         font-size: 1.15rem;
         font-weight: 900;
         text-decoration: none;
       }
-      nav {
-        display: flex;
-        align-items: center;
-        gap: 18px;
-        color: var(--muted);
-        font-weight: 700;
-      }
-      nav a,
-      .nav-cta,
       .button {
         text-decoration: none;
       }
-      .nav-cta,
       .button {
         min-height: 44px;
         display: inline-flex;
@@ -997,8 +989,7 @@ function createGeneratedCss(palette: Palette) {
         padding: 0 18px;
         font-weight: 900;
       }
-      .primary,
-      .nav-cta {
+      .primary {
         background: var(--primary);
         color: white;
       }
@@ -1148,12 +1139,7 @@ function createGeneratedCss(palette: Palette) {
       }
       @media (max-width: 820px) {
         .site-header {
-          align-items: flex-start;
-          flex-direction: column;
           padding: 18px 0;
-        }
-        nav {
-          flex-wrap: wrap;
         }
         .hero,
         .section-grid,
