@@ -561,7 +561,14 @@ export default function Home() {
     setStatus(result.error ? result.error.message : `Saved ${payload.title}.`);
     if (!result.error) {
       setPageForm({ id: null, project_id: payload.project_id, title: "", slug: "", content: "", sort_order: 0 });
+      const savedPage = {
+        ...payload,
+        id: pageForm.id || "pending",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      } as BallzPage;
       await loadContent();
+      refreshPreviewForProjectPages(payload.project_id, savedPage);
     }
     setIsDataBusy(false);
   }
@@ -749,13 +756,41 @@ export default function Home() {
     const projectPages = pagesByProject[project.id] || [];
     const pageSections = projectPages.map((page) => page.title).filter(Boolean);
 
-  return {
-    ...baseDraft,
-    name: project.name,
-    prompt: project.description || baseDraft.prompt,
-    sections: mergePageSections(pageSections, baseDraft.sections)
-  };
-}
+    return {
+      ...baseDraft,
+      name: project.name,
+      prompt: project.description || baseDraft.prompt,
+      sections: mergePageSections(pageSections, baseDraft.sections)
+    };
+  }
+
+  function refreshPreviewForProjectPages(projectId: string, savedPage?: BallzPage) {
+    const project = projects.find((item) => item.id === projectId);
+    if (!project) return;
+
+    const existingPages = pagesByProject[projectId] || [];
+    const nextPages = savedPage
+      ? [...existingPages.filter((page) => page.id !== savedPage.id), savedPage].sort((first, second) => first.sort_order - second.sort_order)
+      : existingPages;
+    const fallback = createSpec(
+      [project.name, project.description].filter(Boolean).join(". ") || project.name,
+      "modern",
+      "landing"
+    );
+    const baseDraft = isSiteSpec(project.site_spec) ? sanitizeDraft(project.site_spec, fallback) : fallback;
+    const pageSections = nextPages.map((page) => page.title).filter(Boolean);
+    const nextDraft: SiteSpec = {
+      ...baseDraft,
+      name: project.name,
+      prompt: project.description || baseDraft.prompt,
+      sections: mergePageSections(pageSections, baseDraft.sections)
+    };
+
+    setDraft(nextDraft);
+    setPreviewSource(`Project: ${project.name}`);
+    setPreviewTarget({ type: "project", id: project.id, label: project.name });
+    setStatus(`Updated ${project.name} navigation with saved pages.`);
+  }
 
   function createDraftFromTemplate(template: BallzTemplate) {
     const fallback = createSpec(template.prompt, "modern", "landing");
