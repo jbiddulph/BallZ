@@ -13,6 +13,11 @@ type Palette = {
   surface: string;
 };
 
+type AssetOverrides = {
+  css: string;
+  js: string;
+};
+
 type SiteSpec = {
   prompt: string;
   style: StyleKey;
@@ -24,6 +29,7 @@ type SiteSpec = {
   sections: string[];
   headline: string;
   summaryPrefix: "auto" | "none";
+  assetOverrides?: AssetOverrides;
 };
 
 type ChatMessage = {
@@ -95,7 +101,16 @@ const siteUpdateSchema = {
           items: { type: "string", minLength: 1, maxLength: 40 }
         },
         headline: { type: "string", minLength: 1, maxLength: 110 },
-        summaryPrefix: { type: "string", enum: ["auto", "none"] }
+        summaryPrefix: { type: "string", enum: ["auto", "none"] },
+        assetOverrides: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            css: { type: "string", maxLength: 5000 },
+            js: { type: "string", maxLength: 3000 }
+          },
+          required: ["css", "js"]
+        }
       },
       required: [
         "prompt",
@@ -107,7 +122,8 @@ const siteUpdateSchema = {
         "tone",
         "sections",
         "headline",
-        "summaryPrefix"
+        "summaryPrefix",
+        "assetOverrides"
       ]
     }
   },
@@ -140,7 +156,7 @@ export async function POST(request: Request) {
         {
           role: "system",
           content:
-            "You are the website builder inside SiteForge. Update only the generated website draft to satisfy the user's latest instruction. Preserve good parts of the current draft unless the user asks for a new direction. If the user asks to change colors, update the palette. If they ask to move sections, reorder the sections array. If they ask for a different business, rewrite the site spec. The prompt field is public hero body copy; do not append edit instructions, API key comments, deployment notes, or chat meta into it. The preview website must never include the SiteForge app chrome or builder UI: no sidebar, Dashboard, Projects, Templates, Settings, Builder Chat, Live Preview, Generated Code, chat controls, or build credits. If a user mentions the top menu, treat it as the generated website nav only. If the user asks to remove the leading article from the short summary, set summaryPrefix to none. Reply concisely with what changed."
+            "You are the website builder inside SiteForge. Update the generated website draft, including content, palette, section order, CSS overrides, and JS overrides, to satisfy the user's latest instruction. Preserve good parts of the current draft unless the user asks for a new direction. If the user asks to change colors, update the palette. If they ask to move sections, reorder the sections array. If they ask for layout, spacing, sizing, positioning, responsive behavior, animation, or interactions, update assetOverrides.css or assetOverrides.js with additive code that targets the generated website classes. Existing classes include site-header, logo, hero, hero-copy, hero-actions, hero-visual, image-card, stat-card, section-grid, feature-band, footer, button, primary, ghost, kicker, lede, and article/span/h2/p inside section-grid. The prompt field is public hero body copy; do not append edit instructions, API key comments, deployment notes, or chat meta into it. Do not include style or script tags in assetOverrides. The preview website must never include the SiteForge app chrome or builder UI: no sidebar, Dashboard, Projects, Templates, Settings, Builder Chat, Live Preview, Generated Code, chat controls, or build credits. If a user mentions the top menu, treat it as the generated website nav only. If the user asks to remove the leading article from the short summary, set summaryPrefix to none. Reply concisely with what changed."
         },
         {
           role: "user",
@@ -210,7 +226,8 @@ function normalizeDraft(next: SiteSpec, fallback: SiteSpec): SiteSpec {
     tone: containsAppChrome(next.tone) ? fallback.tone : next.tone || fallback.tone,
     sections,
     headline: containsAppChrome(next.headline) ? fallback.headline : next.headline || fallback.headline,
-    summaryPrefix: next.summaryPrefix || fallback.summaryPrefix
+    summaryPrefix: next.summaryPrefix || fallback.summaryPrefix,
+    assetOverrides: sanitizeAssetOverrides(next.assetOverrides, fallback.assetOverrides)
   };
 }
 
@@ -226,4 +243,19 @@ function containsAppChrome(value: string | undefined) {
   if (!value) return false;
   const normalized = value.toLowerCase();
   return appChromeTerms.some((term) => normalized.includes(term));
+}
+
+function sanitizeAssetOverrides(overrides: Partial<AssetOverrides> | undefined, fallback: Partial<AssetOverrides> | undefined) {
+  return {
+    css: sanitizeGeneratedAsset(overrides?.css || fallback?.css || "", 5000),
+    js: sanitizeGeneratedAsset(overrides?.js || fallback?.js || "", 3000)
+  };
+}
+
+function sanitizeGeneratedAsset(value: string, maxLength: number) {
+  return value
+    .replace(/<\/?script[^>]*>/gi, "")
+    .replace(/<\/?style[^>]*>/gi, "")
+    .slice(0, maxLength)
+    .trim();
 }

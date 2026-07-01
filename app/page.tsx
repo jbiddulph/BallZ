@@ -31,7 +31,7 @@ import type { BallzPage, BallzProject, BallzTemplate, BallzUser } from "../utils
 
 type StyleKey = "modern" | "editorial" | "startup" | "luxury";
 type PageType = "landing" | "sales" | "portfolio";
-type CodeTab = "html" | "css" | "js";
+type CodeTab = "page" | "css" | "client";
 type Device = "desktop" | "mobile";
 type Role = "assistant" | "user";
 
@@ -42,6 +42,11 @@ type Palette = {
   primary: string;
   secondary: string;
   surface: string;
+};
+
+type AssetOverrides = {
+  css: string;
+  js: string;
 };
 
 type ChatMessage = {
@@ -61,12 +66,15 @@ type SiteSpec = {
   sections: string[];
   headline: string;
   summaryPrefix: "auto" | "none";
+  assetOverrides: AssetOverrides;
 };
 
 type GeneratedSite = {
   html: string;
   css: string;
   js: string;
+  page: string;
+  client: string;
   name: string;
   summary: string;
 };
@@ -314,7 +322,7 @@ export default function Home() {
         "Tell me what to build, then keep asking for changes until you are happy with the outcome. I can update the theme, rewrite the site, or move sections such as pricing, testimonials, classes, or services."
     }
   ]);
-  const [activeTab, setActiveTab] = useState<CodeTab>("html");
+  const [activeTab, setActiveTab] = useState<CodeTab>("page");
   const [device, setDevice] = useState<Device>("desktop");
   const [status, setStatus] = useState("Ready for your next instruction.");
   const [previewSource, setPreviewSource] = useState("Starter draft");
@@ -771,19 +779,19 @@ export default function Home() {
   }
 
   async function copyCode() {
-    await navigator.clipboard.writeText(generated.html);
-    setStatus("Copied full HTML to clipboard.");
+    await navigator.clipboard.writeText(code);
+    setStatus(`Copied ${getCodeTabFileName(activeTab)} to clipboard.`);
   }
 
   function downloadHtml() {
-    const blob = new Blob([generated.html], { type: "text/html" });
+    const blob = new Blob([code], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${generated.name.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "website"}.html`;
+    link.download = getCodeTabDownloadName(activeTab);
     link.click();
     URL.revokeObjectURL(url);
-    setStatus("Downloaded single-file website.");
+    setStatus(`Downloaded ${getCodeTabFileName(activeTab)}.`);
   }
 
   function resetDraft() {
@@ -855,7 +863,7 @@ export default function Home() {
               <Save size={17} /> Save draft
             </button>
             <button className="primaryAction" onClick={downloadHtml} type="button">
-              <Download size={17} /> Download HTML
+              <Download size={17} /> Download file
             </button>
           </div>
         </header>
@@ -1284,11 +1292,11 @@ export default function Home() {
         <section className="codePanel" aria-label="Generated code">
           <div className="panelHeading compact">
             <div>
-              <h2>Generated Code</h2>
-              <p>Review the single-file output before exporting.</p>
+              <h2>Generated Next.js Code</h2>
+              <p>Review the generated app files before exporting.</p>
             </div>
             <div className="tabs" role="tablist" aria-label="Code views">
-              {(["html", "css", "js"] as CodeTab[]).map((tab) => (
+              {(["page", "css", "client"] as CodeTab[]).map((tab) => (
                 <button
                   className={activeTab === tab ? "active" : ""}
                   key={tab}
@@ -1296,8 +1304,8 @@ export default function Home() {
                   role="tab"
                   type="button"
                 >
-                  {tab === "html" ? <Code2 size={16} /> : null}
-                  {tab.toUpperCase()}
+                  {tab === "page" ? <Code2 size={16} /> : null}
+                  {getCodeTabFileName(tab)}
                 </button>
               ))}
             </div>
@@ -1327,7 +1335,8 @@ function createSpec(prompt: string, style: StyleKey, pageType: PageType): SiteSp
     tone,
     sections: getSections(pageType, industry),
     headline: `${name} turns attention into action.`,
-    summaryPrefix: "auto"
+    summaryPrefix: "auto",
+    assetOverrides: { css: "", js: "" }
   };
 }
 
@@ -1356,7 +1365,12 @@ function applyInstruction(current: SiteSpec, instruction: string): SiteSpec {
   const isNewBuild = isNewBuildInstruction(instruction);
   let next = isNewBuild
     ? createSpec(instruction, inferStyle(instruction, current.style), inferPageType(instruction, current.pageType))
-    : { ...current, sections: [...current.sections], palette: { ...current.palette } };
+    : {
+        ...current,
+        sections: [...current.sections],
+        palette: { ...current.palette },
+        assetOverrides: { ...current.assetOverrides }
+      };
 
   const matchedPalette = colorRequests.find(([keyword]) => source.includes(keyword));
   if (matchedPalette) {
@@ -1413,6 +1427,7 @@ function applyInstruction(current: SiteSpec, instruction: string): SiteSpec {
   }
 
   next = applySectionMove(next, instruction);
+  next = applyAssetInstruction(next, instruction);
 
   return next;
 }
@@ -1451,7 +1466,8 @@ function sanitizeDraft(spec: SiteSpec, previous: SiteSpec): SiteSpec {
     tone: containsAppChrome(spec.tone) ? previous.tone : spec.tone,
     headline: containsAppChrome(spec.headline) ? previous.headline : spec.headline,
     palette: { ...spec.palette },
-    sections: sections.length >= 3 ? sections : [...previous.sections]
+    sections: sections.length >= 3 ? sections : [...previous.sections],
+    assetOverrides: sanitizeAssetOverrides(spec.assetOverrides, previous.assetOverrides)
   };
 }
 
@@ -1477,6 +1493,21 @@ function containsAppChrome(value: string) {
   return appChromeTerms.some((term) => normalized.includes(term));
 }
 
+function sanitizeAssetOverrides(overrides: Partial<AssetOverrides> | undefined, fallback: AssetOverrides): AssetOverrides {
+  return {
+    css: sanitizeGeneratedAsset(overrides?.css || fallback.css || "", 5000),
+    js: sanitizeGeneratedAsset(overrides?.js || fallback.js || "", 3000)
+  };
+}
+
+function sanitizeGeneratedAsset(value: string, maxLength: number) {
+  return value
+    .replace(/<\/?script[^>]*>/gi, "")
+    .replace(/<\/?style[^>]*>/gi, "")
+    .slice(0, maxLength)
+    .trim();
+}
+
 function sanitizeSpecForPreview(spec: SiteSpec): SiteSpec {
   const fallbackSections = getSections(spec.pageType, spec.industry);
   const sections = spec.sections
@@ -1490,7 +1521,8 @@ function sanitizeSpecForPreview(spec: SiteSpec): SiteSpec {
     industry: containsAppChrome(spec.industry) ? inferIndustry(defaultPrompt) : spec.industry,
     tone: containsAppChrome(spec.tone) ? inferTone(defaultPrompt, spec.style) : spec.tone,
     headline: containsAppChrome(spec.headline) ? `${inferName(defaultPrompt)} turns attention into action.` : spec.headline,
-    sections: sections.length >= 3 ? sections : fallbackSections
+    sections: sections.length >= 3 ? sections : fallbackSections,
+    assetOverrides: sanitizeAssetOverrides(spec.assetOverrides, { css: "", js: "" })
   };
 }
 
@@ -1578,6 +1610,67 @@ function findMentionedSection(source: string, sections: string[]) {
   );
 }
 
+function applyAssetInstruction(spec: SiteSpec, instruction: string): SiteSpec {
+  const source = instruction.toLowerCase();
+  let next = { ...spec, assetOverrides: { ...spec.assetOverrides } };
+
+  if (
+    /\b(numbers?|01|02|03|04)\b/.test(source) &&
+    /\b(right|right-hand|right hand)\b/.test(source) &&
+    /\b(card|cards|section|sections|desktop|mobile)\b/.test(source)
+  ) {
+    next = addCssOverride(
+      next,
+      "card-number-right",
+      `      /* card-number-right */
+      .section-grid article {
+        position: relative;
+        padding-top: 64px;
+      }
+      .section-grid article span {
+        position: absolute;
+        top: 22px;
+        right: 22px;
+        left: auto;
+        display: inline-flex;
+        justify-content: flex-end;
+        min-width: 2.2ch;
+        text-align: right;
+      }
+      @media (max-width: 820px) {
+        .section-grid article {
+          padding-top: 58px;
+        }
+        .section-grid article span {
+          top: 20px;
+          right: 20px;
+        }
+      }`
+    );
+  }
+
+  return next;
+}
+
+function addCssOverride(spec: SiteSpec, key: string, css: string): SiteSpec {
+  const cleanedCss = sanitizeGeneratedAsset(css, 5000);
+  const existingCss = removeCssOverride(spec.assetOverrides.css, key);
+  return {
+    ...spec,
+    assetOverrides: {
+      ...spec.assetOverrides,
+      css: [existingCss, cleanedCss].filter(Boolean).join("\n\n")
+    }
+  };
+}
+
+function removeCssOverride(css: string, key: string) {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return css
+    .replace(new RegExp(`\\n?\\s*/\\* ${escaped} \\*/[\\s\\S]*?(?=\\n\\s*/\\* [a-z0-9-]+ \\*/|$)`, "gi"), "")
+    .trim();
+}
+
 function cleanText(text: string) {
   return text.replace(/\s+/g, " ").trim();
 }
@@ -1595,6 +1688,18 @@ function slugify(text: string) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function getCodeTabFileName(tab: CodeTab) {
+  if (tab === "page") return "app/page.tsx";
+  if (tab === "css") return "app/generated-site.css";
+  return "app/generated-site.client.tsx";
+}
+
+function getCodeTabDownloadName(tab: CodeTab) {
+  if (tab === "page") return "page.tsx";
+  if (tab === "css") return "generated-site.css";
+  return "generated-site.client.tsx";
 }
 
 function inferExplicitName(prompt: string) {
@@ -1769,7 +1874,9 @@ function createSite(spec: SiteSpec): GeneratedSite {
     safeSpecForPreview.summaryPrefix === "none"
       ? summaryText.charAt(0).toUpperCase() + summaryText.slice(1)
       : `${prefix}${summaryText}`;
-  const css = createGeneratedCss(safeSpecForPreview.palette);
+  const baseCss = createGeneratedCss(safeSpecForPreview.palette);
+  const customCss = sanitizeGeneratedAsset(safeSpecForPreview.assetOverrides.css, 5000);
+  const css = [baseCss, customCss].filter(Boolean).join("\n\n");
   const safeName = escapeHtml(safeSpecForPreview.name);
   const safeIndustry = escapeHtml(safeSpecForPreview.industry);
   const safeTone = escapeHtml(safeSpecForPreview.tone);
@@ -1777,7 +1884,11 @@ function createSite(spec: SiteSpec): GeneratedSite {
   const safePrompt = escapeHtml(safeSpecForPreview.prompt);
   const safeSummary = escapeHtml(summary);
   const safeSections = safeSpecForPreview.sections.map((section) => escapeHtml(section));
-  const js = `document.addEventListener("click", (event) => {
+  const nextSections = safeSpecForPreview.sections.map((section) => ({
+    title: section,
+    copy: createSectionCopy(section, safeSpecForPreview.industry, safeSpecForPreview.tone)
+  }));
+  const baseJs = `document.addEventListener("click", (event) => {
   const link = event.target.closest("a[href^='#']");
   if (!link) return;
 
@@ -1790,6 +1901,8 @@ function createSite(spec: SiteSpec): GeneratedSite {
     block: "start"
   });
 });`;
+  const customJs = sanitizeGeneratedAsset(safeSpecForPreview.assetOverrides.js, 3000);
+  const js = [baseJs, customJs].filter(Boolean).join("\n\n");
 
   const html = `<!doctype html>
 <html lang="en">
@@ -1836,7 +1949,7 @@ ${css}
         <article>
           <span>0${index + 1}</span>
           <h2>${section}</h2>
-          <p>${createSectionCopy(section, spec.industry, spec.tone)}</p>
+          <p>${createSectionCopy(section, safeSpecForPreview.industry, safeSpecForPreview.tone)}</p>
         </article>`
           )
           .join("")}
@@ -1867,8 +1980,18 @@ ${js}
     </script>
   </body>
 </html>`;
+  const page = createNextPageCode({
+    name: safeSpecForPreview.name,
+    industry: safeSpecForPreview.industry,
+    tone: safeSpecForPreview.tone,
+    headline: safeSpecForPreview.headline,
+    prompt: safeSpecForPreview.prompt,
+    summary,
+    sections: nextSections
+  });
+  const client = createNextClientCode(customJs);
 
-  return { html, css, js, name: safeSpecForPreview.name, summary };
+  return { html, css, js, page, client, name: safeSpecForPreview.name, summary };
 }
 
 function escapeHtml(value: string) {
@@ -1878,6 +2001,141 @@ function escapeHtml(value: string) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function createNextPageCode(site: {
+  name: string;
+  industry: string;
+  tone: string;
+  headline: string;
+  prompt: string;
+  summary: string;
+  sections: Array<{ title: string; copy: string }>;
+}) {
+  const firstSectionId = slugify(site.sections[0]?.title || "sections");
+
+  return `import "./generated-site.css";
+import GeneratedSiteClient from "./generated-site.client";
+
+const sections = ${JSON.stringify(site.sections, null, 2)};
+
+export default function Page() {
+  return (
+    <>
+      <GeneratedSiteClient />
+      <header className="site-header">
+        <span className="logo">${escapeJsxText(site.name)}</span>
+      </header>
+
+      <main>
+        <section className="hero">
+          <div className="hero-copy">
+            <p className="kicker">${escapeJsxText(site.summary)}</p>
+            <h1>${escapeJsxText(site.headline)}</h1>
+            <p className="lede">${escapeJsxText(site.prompt)}</p>
+            <div className="hero-actions">
+              <a className="button primary" href="#contact">Book a Consultation</a>
+              <a className="button ghost" href="#${firstSectionId}">Explore {sections[0].title}</a>
+            </div>
+          </div>
+          <div className="hero-visual" aria-label="${escapeJsxAttribute(site.name)} visual preview">
+            <div className="image-card main-card">
+              <span>${escapeJsxText(site.industry)}</span>
+              <strong>${escapeJsxText(site.tone)}</strong>
+            </div>
+            <div className="stat-card">
+              <strong>4.9</strong>
+              <span>Customer rating</span>
+            </div>
+          </div>
+        </section>
+
+        <section className="section-grid" id="${firstSectionId}">
+          {sections.map((section, index) => (
+            <article key={section.title}>
+              <span>{String(index + 1).padStart(2, "0")}</span>
+              <h2>{section.title}</h2>
+              <p>{section.copy}</p>
+            </article>
+          ))}
+        </section>
+
+        <section className="feature-band">
+          <div>
+            <p className="kicker">Built for momentum</p>
+            <h2>A clear path from first impression to sign-up.</h2>
+          </div>
+          <ul>
+            <li>Conversion-focused copy blocks</li>
+            <li>Responsive sections for every device</li>
+            <li>Reusable visual system and calls to action</li>
+          </ul>
+        </section>
+      </main>
+
+      <footer id="contact">
+        <div>
+          <strong>${escapeJsxText(site.name)}</strong>
+          <p>Ready to launch the next version of your ${escapeJsxText(site.industry)}?</p>
+        </div>
+        <a className="button primary" href="mailto:hello@example.com">hello@example.com</a>
+      </footer>
+    </>
+  );
+}
+`;
+}
+
+function createNextClientCode(customJs: string) {
+  const customBlock = customJs
+    ? `\n    // Chat-generated interaction overrides.\n    ${customJs
+        .split("\n")
+        .map((line) => `    ${line}`)
+        .join("\n")
+        .trimStart()}\n`
+    : "";
+
+  return `"use client";
+
+import { useEffect } from "react";
+
+export default function GeneratedSiteClient() {
+  useEffect(() => {
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      const link = target.closest("a[href^='#']");
+      if (!link) return;
+
+      event.preventDefault();
+      const targetId = link.getAttribute("href")?.slice(1);
+      if (!targetId) return;
+
+      document.getElementById(targetId)?.scrollIntoView({
+        behavior: "smooth",
+        block: "start"
+      });
+    };
+
+    document.addEventListener("click", handleClick);
+${customBlock}
+    return () => {
+      document.removeEventListener("click", handleClick);
+    };
+  }, []);
+
+  return null;
+}
+`;
+}
+
+function escapeJsxText(value: string) {
+  return value.replaceAll("{", "&#123;").replaceAll("}", "&#125;");
+}
+
+function escapeJsxAttribute(value: string) {
+  return escapeJsxText(value).replaceAll('"', "&quot;");
 }
 
 function createSectionCopy(section: string, industry: string, tone: string) {
