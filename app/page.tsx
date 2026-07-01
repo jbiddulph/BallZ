@@ -1,20 +1,33 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Bot,
   Code2,
   Copy,
   Download,
+  Edit3,
+  FileText,
+  FolderKanban,
   FileStack,
   LayoutDashboard,
+  Lock,
+  LogOut,
   Monitor,
+  Plus,
   RefreshCcw,
+  Save,
   Send,
   Settings,
   Sparkles,
-  Smartphone
+  Smartphone,
+  Trash2,
+  UserPlus
 } from "lucide-react";
+import type { User } from "@supabase/supabase-js";
+import { createClient } from "../utils/supabase/client";
+import { isSupabaseConfigured } from "../utils/supabase/env";
+import type { BallzPage, BallzProject, BallzTemplate } from "../utils/supabase/types";
 
 type StyleKey = "modern" | "editorial" | "startup" | "luxury";
 type PageType = "landing" | "sales" | "portfolio";
@@ -56,6 +69,33 @@ type GeneratedSite = {
   js: string;
   name: string;
   summary: string;
+};
+
+type AuthMode = "signin" | "signup";
+type ContentView = "builder" | "projects" | "pages" | "templates";
+type ProjectStatus = "draft" | "published" | "archived";
+
+type ProjectForm = {
+  id: string | null;
+  name: string;
+  description: string;
+  status: ProjectStatus;
+};
+
+type PageForm = {
+  id: string | null;
+  project_id: string;
+  title: string;
+  slug: string;
+  content: string;
+  sort_order: number;
+};
+
+type TemplateForm = {
+  id: string | null;
+  name: string;
+  description: string;
+  prompt: string;
 };
 
 const defaultPrompt =
@@ -184,6 +224,7 @@ const colorRequests: Array<[string, Palette, string]> = [
 ];
 
 const initialSpec = createSpec(defaultPrompt, "modern", "landing");
+const supabase = createClient();
 const appChromeTerms = [
   "dashboard",
   "projects",
@@ -212,6 +253,37 @@ export default function Home() {
   const [draft, setDraft] = useState<SiteSpec>(initialSpec);
   const [chatInput, setChatInput] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [authMode, setAuthMode] = useState<AuthMode>("signin");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthBusy, setIsAuthBusy] = useState(false);
+  const [isDataBusy, setIsDataBusy] = useState(false);
+  const [contentView, setContentView] = useState<ContentView>("builder");
+  const [projects, setProjects] = useState<BallzProject[]>([]);
+  const [pages, setPages] = useState<BallzPage[]>([]);
+  const [templates, setTemplates] = useState<BallzTemplate[]>([]);
+  const [projectForm, setProjectForm] = useState<ProjectForm>({
+    id: null,
+    name: "",
+    description: "",
+    status: "draft"
+  });
+  const [pageForm, setPageForm] = useState<PageForm>({
+    id: null,
+    project_id: "",
+    title: "",
+    slug: "",
+    content: "",
+    sort_order: 0
+  });
+  const [templateForm, setTemplateForm] = useState<TemplateForm>({
+    id: null,
+    name: "",
+    description: "",
+    prompt: defaultPrompt
+  });
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 1,
@@ -226,6 +298,235 @@ export default function Home() {
 
   const generated = useMemo(() => createSite(draft), [draft]);
   const code = generated[activeTab];
+  const selectedProjectName =
+    projects.find((project) => project.id === pageForm.project_id)?.name || "No project selected";
+
+  useEffect(() => {
+    if (!supabase) {
+      setAuthMessage("Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY to enable accounts.");
+      return;
+    }
+
+    let isMounted = true;
+
+    supabase.auth.getUser().then(({ data }) => {
+      if (isMounted) setUser(data.user);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => {
+      isMounted = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setProjects([]);
+      setPages([]);
+      setTemplates([]);
+      return;
+    }
+
+    loadContent();
+  }, [user]);
+
+  useEffect(() => {
+    if (!pageForm.project_id && projects[0]) {
+      setPageForm((current) => ({ ...current, project_id: projects[0].id }));
+    }
+  }, [projects, pageForm.project_id]);
+
+  async function handleAuth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || isAuthBusy) return;
+
+    setIsAuthBusy(true);
+    setAuthMessage(authMode === "signin" ? "Signing in..." : "Creating account...");
+
+    const credentials = { email: authEmail.trim(), password: authPassword };
+    const { data, error } =
+      authMode === "signin"
+        ? await supabase.auth.signInWithPassword(credentials)
+        : await supabase.auth.signUp(credentials);
+
+    if (error) {
+      setAuthMessage(error.message);
+    } else {
+      setUser(data.user ?? null);
+      setAuthPassword("");
+      setAuthMessage(authMode === "signin" ? "Signed in." : "Account created. Check your email if confirmation is enabled.");
+    }
+
+    setIsAuthBusy(false);
+  }
+
+  async function signOut() {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setUser(null);
+    setStatus("Signed out.");
+  }
+
+  async function loadContent() {
+    if (!supabase || !user) return;
+
+    setIsDataBusy(true);
+    const [projectResult, pageResult, templateResult] = await Promise.all([
+      supabase.from("ballz_projects").select("*").order("updated_at", { ascending: false }),
+      supabase.from("ballz_pages").select("*").order("sort_order", { ascending: true }),
+      supabase.from("ballz_templates").select("*").order("updated_at", { ascending: false })
+    ]);
+
+    if (projectResult.error || pageResult.error || templateResult.error) {
+      setStatus(projectResult.error?.message || pageResult.error?.message || templateResult.error?.message || "Could not load Supabase content.");
+    } else {
+      setProjects((projectResult.data || []) as BallzProject[]);
+      setPages((pageResult.data || []) as BallzPage[]);
+      setTemplates((templateResult.data || []) as BallzTemplate[]);
+      setStatus("Synced projects, pages, and templates from Supabase.");
+    }
+
+    setIsDataBusy(false);
+  }
+
+  async function saveProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || !user || !projectForm.name.trim()) return;
+
+    setIsDataBusy(true);
+    const payload = {
+      user_id: user.id,
+      name: projectForm.name.trim(),
+      description: cleanText(projectForm.description) || null,
+      status: projectForm.status,
+      site_spec: draft,
+      generated_html: generated.html
+    };
+    const result = projectForm.id
+      ? await supabase.from("ballz_projects").update(payload).eq("id", projectForm.id)
+      : await supabase.from("ballz_projects").insert(payload);
+
+    setStatus(result.error ? result.error.message : `Saved ${payload.name}.`);
+    if (!result.error) {
+      setProjectForm({ id: null, name: "", description: "", status: "draft" });
+      await loadContent();
+    }
+    setIsDataBusy(false);
+  }
+
+  async function saveCurrentDraftAsProject() {
+    setProjectForm({
+      id: null,
+      name: generated.name,
+      description: generated.summary,
+      status: "draft"
+    });
+    setContentView("projects");
+    setStatus("Review the project details, then save the current draft to Supabase.");
+  }
+
+  async function savePage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || !user || !pageForm.project_id || !pageForm.title.trim()) return;
+
+    setIsDataBusy(true);
+    const payload = {
+      user_id: user.id,
+      project_id: pageForm.project_id,
+      title: pageForm.title.trim(),
+      slug: slugify(pageForm.slug || pageForm.title),
+      content: pageForm.content.trim() || null,
+      sort_order: Number.isFinite(pageForm.sort_order) ? pageForm.sort_order : 0
+    };
+    const result = pageForm.id
+      ? await supabase.from("ballz_pages").update(payload).eq("id", pageForm.id)
+      : await supabase.from("ballz_pages").insert(payload);
+
+    setStatus(result.error ? result.error.message : `Saved ${payload.title}.`);
+    if (!result.error) {
+      setPageForm({ id: null, project_id: payload.project_id, title: "", slug: "", content: "", sort_order: 0 });
+      await loadContent();
+    }
+    setIsDataBusy(false);
+  }
+
+  async function saveTemplate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || !user || !templateForm.name.trim() || !templateForm.prompt.trim()) return;
+
+    setIsDataBusy(true);
+    const payload = {
+      user_id: user.id,
+      name: templateForm.name.trim(),
+      description: cleanText(templateForm.description) || null,
+      prompt: templateForm.prompt.trim(),
+      site_spec: draft
+    };
+    const result = templateForm.id
+      ? await supabase.from("ballz_templates").update(payload).eq("id", templateForm.id)
+      : await supabase.from("ballz_templates").insert(payload);
+
+    setStatus(result.error ? result.error.message : `Saved ${payload.name}.`);
+    if (!result.error) {
+      setTemplateForm({ id: null, name: "", description: "", prompt: defaultPrompt });
+      await loadContent();
+    }
+    setIsDataBusy(false);
+  }
+
+  async function deleteRow(table: "ballz_projects" | "ballz_pages" | "ballz_templates", id: string, label: string) {
+    if (!supabase || !confirm(`Delete ${label}?`)) return;
+
+    setIsDataBusy(true);
+    const result = await supabase.from(table).delete().eq("id", id);
+    setStatus(result.error ? result.error.message : `Deleted ${label}.`);
+    if (!result.error) await loadContent();
+    setIsDataBusy(false);
+  }
+
+  function editProject(project: BallzProject) {
+    setProjectForm({
+      id: project.id,
+      name: project.name,
+      description: project.description || "",
+      status: project.status
+    });
+    setContentView("projects");
+  }
+
+  function editPage(page: BallzPage) {
+    setPageForm({
+      id: page.id,
+      project_id: page.project_id,
+      title: page.title,
+      slug: page.slug,
+      content: page.content || "",
+      sort_order: page.sort_order
+    });
+    setContentView("pages");
+  }
+
+  function editTemplate(template: BallzTemplate) {
+    setTemplateForm({
+      id: template.id,
+      name: template.name,
+      description: template.description || "",
+      prompt: template.prompt
+    });
+    setContentView("templates");
+  }
+
+  function useTemplate(template: BallzTemplate) {
+    const nextDraft = sanitizeDraft((template.site_spec || createSpec(template.prompt, "modern", "landing")) as SiteSpec, draft);
+    setDraft(nextDraft);
+    setChatInput(template.prompt);
+    setContentView("builder");
+    setStatus(`Loaded ${template.name} into the builder.`);
+  }
 
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -301,18 +602,18 @@ export default function Home() {
         </a>
 
         <nav className="navList" aria-label="Primary">
-          <a className="navItem active" href="#">
+          <button className={`navItem ${contentView === "builder" ? "active" : ""}`} onClick={() => setContentView("builder")} type="button">
             <LayoutDashboard size={18} /> Dashboard
-          </a>
-          <a className="navItem" href="#">
+          </button>
+          <button className={`navItem ${contentView === "projects" ? "active" : ""}`} onClick={() => setContentView("projects")} type="button">
             <FileStack size={18} /> Projects
-          </a>
-          <a className="navItem" href="#">
+          </button>
+          <button className={`navItem ${contentView === "templates" ? "active" : ""}`} onClick={() => setContentView("templates")} type="button">
             <Sparkles size={18} /> Templates
-          </a>
-          <a className="navItem" href="#">
+          </button>
+          <button className={`navItem ${contentView === "pages" ? "active" : ""}`} onClick={() => setContentView("pages")} type="button">
             <Settings size={18} /> Settings
-          </a>
+          </button>
         </nav>
 
         <div className="usagePanel">
@@ -335,11 +636,277 @@ export default function Home() {
             <button className="iconButton" onClick={resetDraft} type="button" aria-label="Reset draft" title="Reset draft">
               <RefreshCcw size={18} />
             </button>
+            <button className="secondaryAction" onClick={saveCurrentDraftAsProject} disabled={!user} type="button">
+              <Save size={17} /> Save draft
+            </button>
             <button className="primaryAction" onClick={downloadHtml} type="button">
               <Download size={17} /> Download HTML
             </button>
           </div>
         </header>
+
+        <section className="accountPanel">
+          {user ? (
+            <>
+              <div>
+                <p className="eyebrow">Signed in</p>
+                <h2>{user.email}</h2>
+                <p>Projects, pages, and templates are stored in Supabase under your account.</p>
+              </div>
+              <div className="topbarActions">
+                <button className="secondaryAction" onClick={loadContent} disabled={isDataBusy} type="button">
+                  <RefreshCcw size={17} /> {isDataBusy ? "Syncing" : "Sync"}
+                </button>
+                <button className="iconButton" onClick={signOut} type="button" aria-label="Sign out" title="Sign out">
+                  <LogOut size={18} />
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <p className="eyebrow">Account</p>
+                <h2>Sign in to save and manage work.</h2>
+                <p>Use Supabase Auth to keep each user's projects, pages, and templates private.</p>
+              </div>
+              <form className="authForm" onSubmit={handleAuth}>
+                <div className="authMode" aria-label="Auth mode">
+                  <button className={authMode === "signin" ? "active" : ""} onClick={() => setAuthMode("signin")} type="button">
+                    <Lock size={15} /> Sign in
+                  </button>
+                  <button className={authMode === "signup" ? "active" : ""} onClick={() => setAuthMode("signup")} type="button">
+                    <UserPlus size={15} /> Sign up
+                  </button>
+                </div>
+                <label>
+                  Email
+                  <input
+                    autoComplete="email"
+                    disabled={!isSupabaseConfigured || isAuthBusy}
+                    onChange={(event) => setAuthEmail(event.target.value)}
+                    placeholder="you@example.com"
+                    type="email"
+                    value={authEmail}
+                  />
+                </label>
+                <label>
+                  Password
+                  <input
+                    autoComplete={authMode === "signin" ? "current-password" : "new-password"}
+                    disabled={!isSupabaseConfigured || isAuthBusy}
+                    minLength={6}
+                    onChange={(event) => setAuthPassword(event.target.value)}
+                    placeholder="At least 6 characters"
+                    type="password"
+                    value={authPassword}
+                  />
+                </label>
+                <button className="primaryAction" disabled={!isSupabaseConfigured || isAuthBusy} type="submit">
+                  {authMode === "signin" ? "Sign in" : "Create account"}
+                </button>
+                {authMessage ? <p className="formNote">{authMessage}</p> : null}
+              </form>
+            </>
+          )}
+        </section>
+
+        {user ? (
+          <section className="contentPanel">
+            <div className="panelHeading compact">
+              <div>
+                <h2>Content Library</h2>
+                <p>Manage Supabase-backed projects, pages, and reusable templates.</p>
+              </div>
+              <div className="tabs" role="tablist" aria-label="Content views">
+                {(["projects", "pages", "templates"] as ContentView[]).map((view) => (
+                  <button
+                    className={contentView === view ? "active" : ""}
+                    key={view}
+                    onClick={() => setContentView(view)}
+                    role="tab"
+                    type="button"
+                  >
+                    {view === "projects" ? <FolderKanban size={16} /> : null}
+                    {view === "pages" ? <FileText size={16} /> : null}
+                    {view === "templates" ? <Sparkles size={16} /> : null}
+                    {titleCase(view)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {contentView === "projects" ? (
+              <div className="dataGrid">
+                <form className="dataForm" onSubmit={saveProject}>
+                  <h3>{projectForm.id ? "Edit project" : "New project"}</h3>
+                  <label>
+                    Name
+                    <input value={projectForm.name} onChange={(event) => setProjectForm({ ...projectForm, name: event.target.value })} />
+                  </label>
+                  <label>
+                    Description
+                    <textarea value={projectForm.description} onChange={(event) => setProjectForm({ ...projectForm, description: event.target.value })} />
+                  </label>
+                  <label>
+                    Status
+                    <select value={projectForm.status} onChange={(event) => setProjectForm({ ...projectForm, status: event.target.value as ProjectStatus })}>
+                      <option value="draft">Draft</option>
+                      <option value="published">Published</option>
+                      <option value="archived">Archived</option>
+                    </select>
+                  </label>
+                  <div className="buttonRow">
+                    <button className="primaryAction" disabled={isDataBusy} type="submit">
+                      <Save size={17} /> Save project
+                    </button>
+                    {projectForm.id ? (
+                      <button className="secondaryAction" onClick={() => setProjectForm({ id: null, name: "", description: "", status: "draft" })} type="button">
+                        Cancel
+                      </button>
+                    ) : null}
+                  </div>
+                </form>
+                <div className="recordList">
+                  {projects.map((project) => (
+                    <article className="recordCard" key={project.id}>
+                      <span>{project.status}</span>
+                      <h3>{project.name}</h3>
+                      <p>{project.description || "No description yet."}</p>
+                      <div className="recordActions">
+                        <button onClick={() => editProject(project)} type="button">
+                          <Edit3 size={15} /> Edit
+                        </button>
+                        <button onClick={() => deleteRow("ballz_projects", project.id, project.name)} type="button">
+                          <Trash2 size={15} /> Delete
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                  {projects.length === 0 ? <p className="emptyState">No projects yet. Save the current draft or create one here.</p> : null}
+                </div>
+              </div>
+            ) : null}
+
+            {contentView === "pages" ? (
+              <div className="dataGrid">
+                <form className="dataForm" onSubmit={savePage}>
+                  <h3>{pageForm.id ? "Edit page" : "New page"}</h3>
+                  <p className="formNote">Project: {selectedProjectName}</p>
+                  <label>
+                    Project
+                    <select value={pageForm.project_id} onChange={(event) => setPageForm({ ...pageForm, project_id: event.target.value })}>
+                      <option value="">Choose a project</option>
+                      {projects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Title
+                    <input value={pageForm.title} onChange={(event) => setPageForm({ ...pageForm, title: event.target.value, slug: pageForm.slug || slugify(event.target.value) })} />
+                  </label>
+                  <label>
+                    Slug
+                    <input value={pageForm.slug} onChange={(event) => setPageForm({ ...pageForm, slug: event.target.value })} />
+                  </label>
+                  <label>
+                    Content
+                    <textarea value={pageForm.content} onChange={(event) => setPageForm({ ...pageForm, content: event.target.value })} />
+                  </label>
+                  <label>
+                    Sort order
+                    <input
+                      type="number"
+                      value={pageForm.sort_order}
+                      onChange={(event) => setPageForm({ ...pageForm, sort_order: Number(event.target.value) })}
+                    />
+                  </label>
+                  <div className="buttonRow">
+                    <button className="primaryAction" disabled={isDataBusy || !projects.length} type="submit">
+                      <Save size={17} /> Save page
+                    </button>
+                    {pageForm.id ? (
+                      <button className="secondaryAction" onClick={() => setPageForm({ id: null, project_id: pageForm.project_id, title: "", slug: "", content: "", sort_order: 0 })} type="button">
+                        Cancel
+                      </button>
+                    ) : null}
+                  </div>
+                </form>
+                <div className="recordList">
+                  {pages.map((page) => (
+                    <article className="recordCard" key={page.id}>
+                      <span>{projects.find((project) => project.id === page.project_id)?.name || "Project"}</span>
+                      <h3>{page.title}</h3>
+                      <p>/{page.slug}</p>
+                      <div className="recordActions">
+                        <button onClick={() => editPage(page)} type="button">
+                          <Edit3 size={15} /> Edit
+                        </button>
+                        <button onClick={() => deleteRow("ballz_pages", page.id, page.title)} type="button">
+                          <Trash2 size={15} /> Delete
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                  {pages.length === 0 ? <p className="emptyState">No pages yet. Create a project first, then add pages.</p> : null}
+                </div>
+              </div>
+            ) : null}
+
+            {contentView === "templates" ? (
+              <div className="dataGrid">
+                <form className="dataForm" onSubmit={saveTemplate}>
+                  <h3>{templateForm.id ? "Edit template" : "New template"}</h3>
+                  <label>
+                    Name
+                    <input value={templateForm.name} onChange={(event) => setTemplateForm({ ...templateForm, name: event.target.value })} />
+                  </label>
+                  <label>
+                    Description
+                    <textarea value={templateForm.description} onChange={(event) => setTemplateForm({ ...templateForm, description: event.target.value })} />
+                  </label>
+                  <label>
+                    Prompt
+                    <textarea value={templateForm.prompt} onChange={(event) => setTemplateForm({ ...templateForm, prompt: event.target.value })} />
+                  </label>
+                  <div className="buttonRow">
+                    <button className="primaryAction" disabled={isDataBusy} type="submit">
+                      <Save size={17} /> Save template
+                    </button>
+                    {templateForm.id ? (
+                      <button className="secondaryAction" onClick={() => setTemplateForm({ id: null, name: "", description: "", prompt: defaultPrompt })} type="button">
+                        Cancel
+                      </button>
+                    ) : null}
+                  </div>
+                </form>
+                <div className="recordList">
+                  {templates.map((template) => (
+                    <article className="recordCard" key={template.id}>
+                      <span>Template</span>
+                      <h3>{template.name}</h3>
+                      <p>{template.description || template.prompt}</p>
+                      <div className="recordActions">
+                        <button onClick={() => useTemplate(template)} type="button">
+                          <Plus size={15} /> Use
+                        </button>
+                        <button onClick={() => editTemplate(template)} type="button">
+                          <Edit3 size={15} /> Edit
+                        </button>
+                        <button onClick={() => deleteRow("ballz_templates", template.id, template.name)} type="button">
+                          <Trash2 size={15} /> Delete
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                  {templates.length === 0 ? <p className="emptyState">No templates yet. Save reusable prompts here.</p> : null}
+                </div>
+              </div>
+            ) : null}
+          </section>
+        ) : null}
 
         <section className="builderGrid">
           <div className="promptPanel">
@@ -699,6 +1266,13 @@ function titleCase(text: string) {
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(" ");
+}
+
+function slugify(text: string) {
+  return cleanText(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function inferExplicitName(prompt: string) {
