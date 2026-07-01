@@ -14,7 +14,6 @@ import {
   Lock,
   LogOut,
   Monitor,
-  Plus,
   RefreshCcw,
   Save,
   Send,
@@ -313,11 +312,20 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<CodeTab>("html");
   const [device, setDevice] = useState<Device>("desktop");
   const [status, setStatus] = useState("Ready for your next instruction.");
+  const [previewSource, setPreviewSource] = useState("Starter draft");
 
   const generated = useMemo(() => createSite(draft), [draft]);
   const code = generated[activeTab];
   const selectedProjectName =
     projects.find((project) => project.id === pageForm.project_id)?.name || "No project selected";
+  const pagesByProject = useMemo(() => {
+    return pages.reduce<Record<string, BallzPage[]>>((groups, page) => {
+      groups[page.project_id] = [...(groups[page.project_id] || []), page].sort(
+        (first, second) => first.sort_order - second.sort_order
+      );
+      return groups;
+    }, {});
+  }, [pages]);
 
   useEffect(() => {
     if (!supabase) {
@@ -565,6 +573,23 @@ export default function Home() {
     setContentView("projects");
   }
 
+  function previewProject(project: BallzProject) {
+    const nextDraft = createDraftFromProject(project);
+    setDraft(nextDraft);
+    setProjectForm({
+      id: project.id,
+      name: project.name,
+      description: project.description || "",
+      status: project.status
+    });
+    setPageForm((current) => ({
+      ...current,
+      project_id: project.id
+    }));
+    setPreviewSource(`Project: ${project.name}`);
+    setStatus(`Loaded ${project.name} into the live preview.`);
+  }
+
   function editPage(page: BallzPage) {
     setPageForm({
       id: page.id,
@@ -575,6 +600,25 @@ export default function Home() {
       sort_order: page.sort_order
     });
     setContentView("pages");
+  }
+
+  function previewPage(page: BallzPage) {
+    const project = projects.find((item) => item.id === page.project_id);
+    const projectPages = pagesByProject[page.project_id] || [page];
+    const baseDraft = project ? createDraftFromProject(project) : draft;
+    const pageSections = projectPages.map((item) => item.title).filter(Boolean);
+    const nextDraft: SiteSpec = {
+      ...baseDraft,
+      prompt: page.content || baseDraft.prompt,
+      name: project?.name || baseDraft.name,
+      headline: `${page.title} for ${project?.name || baseDraft.name}.`,
+      sections: pageSections.length >= 3 ? pageSections.slice(0, 6) : baseDraft.sections
+    };
+
+    setDraft(nextDraft);
+    editPage(page);
+    setPreviewSource(`Page: ${page.title}`);
+    setStatus(`Loaded ${page.title} into the live preview.`);
   }
 
   function editTemplate(template: BallzTemplate) {
@@ -588,11 +632,35 @@ export default function Home() {
   }
 
   function useTemplate(template: BallzTemplate) {
-    const nextDraft = sanitizeDraft((template.site_spec || createSpec(template.prompt, "modern", "landing")) as SiteSpec, draft);
+    const nextDraft = createDraftFromTemplate(template);
     setDraft(nextDraft);
     setChatInput(template.prompt);
     setContentView("builder");
-    setStatus(`Loaded ${template.name} into the builder.`);
+    setPreviewSource(`Template: ${template.name}`);
+    setStatus(`Loaded ${template.name} into the live preview.`);
+  }
+
+  function createDraftFromProject(project: BallzProject) {
+    const fallback = createSpec(
+      [project.name, project.description].filter(Boolean).join(". ") || project.name,
+      "modern",
+      "landing"
+    );
+    const baseDraft = isSiteSpec(project.site_spec) ? sanitizeDraft(project.site_spec, fallback) : fallback;
+    const projectPages = pagesByProject[project.id] || [];
+    const pageSections = projectPages.map((page) => page.title).filter(Boolean);
+
+    return {
+      ...baseDraft,
+      name: project.name,
+      prompt: project.description || baseDraft.prompt,
+      sections: pageSections.length >= 3 ? pageSections.slice(0, 6) : baseDraft.sections
+    };
+  }
+
+  function createDraftFromTemplate(template: BallzTemplate) {
+    const fallback = createSpec(template.prompt, "modern", "landing");
+    return isSiteSpec(template.site_spec) ? sanitizeDraft(template.site_spec, fallback) : fallback;
   }
 
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
@@ -613,6 +681,7 @@ export default function Home() {
       const result = await requestAiDraft(draft, pendingMessages, instruction);
       const nextDraft = applyDeterministicOverrides(result.draft, instruction, draft);
       setDraft(nextDraft);
+      setPreviewSource("Builder chat");
       setMessages([...pendingMessages, { id: nextId + 1, role: "assistant", content: result.reply }]);
       setStatus(result.reply);
     } catch (error) {
@@ -620,6 +689,7 @@ export default function Home() {
       const diagnostic = error instanceof Error ? error.message : "AI service is unavailable.";
       const reply = `${describeChanges(draft, nextDraft, instruction)} AI edit failed: ${diagnostic}`;
       setDraft(nextDraft);
+      setPreviewSource("Builder chat");
       setMessages([...pendingMessages, { id: nextId + 1, role: "assistant", content: reply }]);
       setStatus(reply);
     } finally {
@@ -654,6 +724,7 @@ export default function Home() {
           "Reset complete. Tell me what to build or what to change, and I will update the current draft."
       }
     ]);
+    setPreviewSource("Starter draft");
     setStatus("Reset to the starter site.");
   }
 
@@ -906,6 +977,9 @@ export default function Home() {
                       <h3>{project.name}</h3>
                       <p>{project.description || "No description yet."}</p>
                       <div className="recordActions">
+                        <button onClick={() => previewProject(project)} type="button">
+                          <Monitor size={15} /> Preview
+                        </button>
                         <button onClick={() => editProject(project)} type="button">
                           <Edit3 size={15} /> Edit
                         </button>
@@ -974,6 +1048,9 @@ export default function Home() {
                       <h3>{page.title}</h3>
                       <p>/{page.slug}</p>
                       <div className="recordActions">
+                        <button onClick={() => previewPage(page)} type="button">
+                          <Monitor size={15} /> Preview
+                        </button>
                         <button onClick={() => editPage(page)} type="button">
                           <Edit3 size={15} /> Edit
                         </button>
@@ -1023,7 +1100,7 @@ export default function Home() {
                       <p>{template.description || template.prompt}</p>
                       <div className="recordActions">
                         <button onClick={() => useTemplate(template)} type="button">
-                          <Plus size={15} /> Use
+                          <Monitor size={15} /> Preview
                         </button>
                         <button onClick={() => editTemplate(template)} type="button">
                           <Edit3 size={15} /> Edit
@@ -1104,7 +1181,7 @@ export default function Home() {
               <div>
                 <h2>Live Preview</h2>
                 <p>
-                  {generated.name} · {generated.summary}
+                  {previewSource} · {generated.name} · {generated.summary}
                 </p>
               </div>
               <div className="deviceToggle" aria-label="Preview size">
@@ -1281,6 +1358,23 @@ function sanitizeDraft(spec: SiteSpec, previous: SiteSpec): SiteSpec {
     palette: { ...spec.palette },
     sections: sections.length >= 3 ? sections : [...previous.sections]
   };
+}
+
+function isSiteSpec(value: unknown): value is SiteSpec {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<SiteSpec>;
+  return (
+    typeof candidate.prompt === "string" &&
+    typeof candidate.style === "string" &&
+    typeof candidate.pageType === "string" &&
+    typeof candidate.name === "string" &&
+    typeof candidate.industry === "string" &&
+    typeof candidate.tone === "string" &&
+    typeof candidate.headline === "string" &&
+    Array.isArray(candidate.sections) &&
+    Boolean(candidate.palette) &&
+    typeof candidate.palette === "object"
+  );
 }
 
 function containsAppChrome(value: string) {
