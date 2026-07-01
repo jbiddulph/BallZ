@@ -224,9 +224,10 @@ export default function Home() {
       setDraft(nextDraft);
       setMessages([...pendingMessages, { id: nextId + 1, role: "assistant", content: result.reply }]);
       setStatus(result.reply);
-    } catch {
+    } catch (error) {
       const nextDraft = applyInstruction(draft, instruction);
-      const reply = `${describeChanges(draft, nextDraft, instruction)} Add OPENAI_API_KEY to enable broader AI edits.`;
+      const diagnostic = error instanceof Error ? error.message : "AI service is unavailable.";
+      const reply = `${describeChanges(draft, nextDraft, instruction)} AI edit failed: ${diagnostic}`;
       setDraft(nextDraft);
       setMessages([...pendingMessages, { id: nextId + 1, role: "assistant", content: reply }]);
       setStatus(reply);
@@ -456,7 +457,11 @@ async function requestAiDraft(draft: SiteSpec, messages: ChatMessage[], instruct
   });
 
   if (!response.ok) {
-    throw new Error("AI draft request failed");
+    const payload = (await response.json().catch(() => null)) as {
+      error?: string;
+      detail?: string;
+    } | null;
+    throw new Error(payload?.detail || payload?.error || "AI draft request failed.");
   }
 
   return (await response.json()) as { draft: SiteSpec; reply: string };

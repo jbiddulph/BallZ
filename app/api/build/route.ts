@@ -96,53 +96,75 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "OPENAI_API_KEY is not configured." }, { status: 503 });
   }
 
-  const body = (await request.json()) as {
-    draft?: SiteSpec;
-    messages?: ChatMessage[];
-    instruction?: string;
-  };
+  try {
+    const body = (await request.json()) as {
+      draft?: SiteSpec;
+      messages?: ChatMessage[];
+      instruction?: string;
+    };
 
-  if (!body.draft || !body.instruction) {
-    return NextResponse.json({ error: "Missing draft or instruction." }, { status: 400 });
+    if (!body.draft || !body.instruction) {
+      return NextResponse.json({ error: "Missing draft or instruction." }, { status: 400 });
+    }
+
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+    const recentMessages = (body.messages || []).slice(-8);
+
+    const response = await openai.responses.create({
+      model,
+      input: [
+        {
+          role: "system",
+          content:
+            "You are the website builder inside SiteForge. Update the current website draft to satisfy the user's latest instruction. Preserve good parts of the current draft unless the user asks for a new direction. If the user asks to change colors, update the palette. If they ask to move sections, reorder the sections array. If they ask for a different business, rewrite the site spec. The prompt field is public hero body copy; do not append edit instructions, API key comments, deployment notes, or chat meta into it. If the user asks to remove the leading article from the short summary, set summaryPrefix to none. Reply concisely with what changed."
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            currentDraft: body.draft,
+            recentChat: recentMessages,
+            latestInstruction: body.instruction
+          })
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "site_update",
+          strict: true,
+          schema: siteUpdateSchema
+        }
+      }
+    });
+
+    const output = JSON.parse(response.output_text) as { draft: SiteSpec; reply: string };
+
+    return NextResponse.json({
+      reply: output.reply,
+      draft: normalizeDraft(output.draft, body.draft)
+    });
+  } catch (error) {
+    const detail = getSafeErrorMessage(error);
+    return NextResponse.json({ error: "AI draft request failed.", detail }, { status: 502 });
+  }
+}
+
+function getSafeErrorMessage(error: unknown) {
+  if (error && typeof error === "object") {
+    const maybeError = error as { message?: unknown; status?: unknown; code?: unknown };
+    const parts = [
+      typeof maybeError.status === "number" ? `status ${maybeError.status}` : null,
+      typeof maybeError.code === "string" ? maybeError.code : null,
+      typeof maybeError.message === "string" ? maybeError.message : null
+    ].filter(Boolean);
+
+    if (parts.length > 0) {
+      return parts.join(": ");
+    }
   }
 
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
-  const recentMessages = (body.messages || []).slice(-8);
-
-  const response = await openai.responses.create({
-    model,
-    input: [
-      {
-        role: "system",
-        content:
-          "You are the website builder inside SiteForge. Update the current website draft to satisfy the user's latest instruction. Preserve good parts of the current draft unless the user asks for a new direction. If the user asks to change colors, update the palette. If they ask to move sections, reorder the sections array. If they ask for a different business, rewrite the site spec. The prompt field is public hero body copy; do not append edit instructions, API key comments, deployment notes, or chat meta into it. If the user asks to remove the leading article from the short summary, set summaryPrefix to none. Reply concisely with what changed."
-      },
-      {
-        role: "user",
-        content: JSON.stringify({
-          currentDraft: body.draft,
-          recentChat: recentMessages,
-          latestInstruction: body.instruction
-        })
-      }
-    ],
-    text: {
-      format: {
-        type: "json_schema",
-        name: "site_update",
-        strict: true,
-        schema: siteUpdateSchema
-      }
-    }
-  });
-
-  const output = JSON.parse(response.output_text) as { draft: SiteSpec; reply: string };
-
-  return NextResponse.json({
-    reply: output.reply,
-    draft: normalizeDraft(output.draft, body.draft)
-  });
+  return "Unknown server error.";
 }
 
 function normalizeDraft(next: SiteSpec, fallback: SiteSpec): SiteSpec {
