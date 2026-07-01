@@ -189,6 +189,15 @@ const appChromeTerms = [
   "projects",
   "templates",
   "settings",
+  "left menu",
+  "side menu",
+  "sidebar",
+  "side bar",
+  "left sidebar",
+  "left side bar",
+  "chat",
+  "chatbox",
+  "chat box",
   "builder chat",
   "generated code",
   "live preview",
@@ -579,6 +588,23 @@ function containsAppChrome(value: string) {
   return appChromeTerms.some((term) => normalized.includes(term));
 }
 
+function sanitizeSpecForPreview(spec: SiteSpec): SiteSpec {
+  const fallbackSections = getSections(spec.pageType, spec.industry);
+  const sections = spec.sections
+    .filter((section) => section && !containsAppChrome(section))
+    .slice(0, 6);
+
+  return {
+    ...spec,
+    prompt: containsAppChrome(spec.prompt) ? defaultPrompt : spec.prompt,
+    name: containsAppChrome(spec.name) ? inferName(defaultPrompt) : spec.name,
+    industry: containsAppChrome(spec.industry) ? inferIndustry(defaultPrompt) : spec.industry,
+    tone: containsAppChrome(spec.tone) ? inferTone(defaultPrompt, spec.style) : spec.tone,
+    headline: containsAppChrome(spec.headline) ? `${inferName(defaultPrompt)} turns attention into action.` : spec.headline,
+    sections: sections.length >= 3 ? sections : fallbackSections
+  };
+}
+
 function isNewBuildInstruction(instruction: string) {
   const source = instruction.toLowerCase();
   return (
@@ -765,22 +791,28 @@ function getSections(pageType: PageType, industry: string) {
 }
 
 function createSite(spec: SiteSpec): GeneratedSite {
-  const adjective = spec.tone === "premium" ? "elevated" : spec.tone === "energetic" ? "high-energy" : spec.tone;
+  const safeSpecForPreview = sanitizeSpecForPreview(spec);
+  const adjective =
+    safeSpecForPreview.tone === "premium"
+      ? "elevated"
+      : safeSpecForPreview.tone === "energetic"
+        ? "high-energy"
+        : safeSpecForPreview.tone;
   const article = /^[aeiou]/i.test(adjective) ? "An" : "A";
-  const prefix = spec.summaryPrefix === "none" ? "" : `${article} `;
-  const summaryText = `${adjective} ${spec.pageType.replace("-", " ")} for a ${spec.industry}.`;
+  const prefix = safeSpecForPreview.summaryPrefix === "none" ? "" : `${article} `;
+  const summaryText = `${adjective} ${safeSpecForPreview.pageType.replace("-", " ")} for a ${safeSpecForPreview.industry}.`;
   const summary =
-    spec.summaryPrefix === "none"
+    safeSpecForPreview.summaryPrefix === "none"
       ? summaryText.charAt(0).toUpperCase() + summaryText.slice(1)
       : `${prefix}${summaryText}`;
-  const css = createGeneratedCss(spec.palette);
-  const safeName = escapeHtml(spec.name);
-  const safeIndustry = escapeHtml(spec.industry);
-  const safeTone = escapeHtml(spec.tone);
-  const safeHeadline = escapeHtml(spec.headline);
-  const safePrompt = escapeHtml(spec.prompt);
+  const css = createGeneratedCss(safeSpecForPreview.palette);
+  const safeName = escapeHtml(safeSpecForPreview.name);
+  const safeIndustry = escapeHtml(safeSpecForPreview.industry);
+  const safeTone = escapeHtml(safeSpecForPreview.tone);
+  const safeHeadline = escapeHtml(safeSpecForPreview.headline);
+  const safePrompt = escapeHtml(safeSpecForPreview.prompt);
   const safeSummary = escapeHtml(summary);
-  const safeSections = spec.sections.map((section) => escapeHtml(section));
+  const safeSections = safeSpecForPreview.sections.map((section) => escapeHtml(section));
   const js = `const cta = document.querySelector(".nav-cta");
 cta?.addEventListener("click", () => {
   document.body.classList.add("cta-clicked");
@@ -870,7 +902,7 @@ ${js}
   </body>
 </html>`;
 
-  return { html, css, js, name: spec.name, summary };
+  return { html, css, js, name: safeSpecForPreview.name, summary };
 }
 
 function escapeHtml(value: string) {
