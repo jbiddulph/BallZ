@@ -75,6 +75,11 @@ type AuthMode = "signin" | "signup";
 type ContentView = "builder" | "users" | "projects" | "pages" | "templates";
 type ProjectStatus = "draft" | "published" | "archived";
 type UserRole = "owner" | "editor" | "viewer";
+type PreviewTarget =
+  | { type: "project"; id: string; label: string }
+  | { type: "page"; id: string; projectId: string; label: string }
+  | { type: "template"; id: string; label: string }
+  | null;
 
 type UserForm = {
   id: string | null;
@@ -313,6 +318,7 @@ export default function Home() {
   const [device, setDevice] = useState<Device>("desktop");
   const [status, setStatus] = useState("Ready for your next instruction.");
   const [previewSource, setPreviewSource] = useState("Starter draft");
+  const [previewTarget, setPreviewTarget] = useState<PreviewTarget>(null);
 
   const generated = useMemo(() => createSite(draft), [draft]);
   const code = generated[activeTab];
@@ -587,6 +593,7 @@ export default function Home() {
       project_id: project.id
     }));
     setPreviewSource(`Project: ${project.name}`);
+    setPreviewTarget({ type: "project", id: project.id, label: project.name });
     setStatus(`Loaded ${project.name} into the live preview.`);
   }
 
@@ -618,6 +625,7 @@ export default function Home() {
     setDraft(nextDraft);
     editPage(page);
     setPreviewSource(`Page: ${page.title}`);
+    setPreviewTarget({ type: "page", id: page.id, projectId: page.project_id, label: page.title });
     setStatus(`Loaded ${page.title} into the live preview.`);
   }
 
@@ -637,6 +645,7 @@ export default function Home() {
     setChatInput(template.prompt);
     setContentView("builder");
     setPreviewSource(`Template: ${template.name}`);
+    setPreviewTarget({ type: "template", id: template.id, label: template.name });
     setStatus(`Loaded ${template.name} into the live preview.`);
   }
 
@@ -663,6 +672,63 @@ export default function Home() {
     return isSiteSpec(template.site_spec) ? sanitizeDraft(template.site_spec, fallback) : fallback;
   }
 
+  async function persistPreviewDraft(nextDraft: SiteSpec) {
+    if (!supabase || !user || !previewTarget) return null;
+
+    const nextGenerated = createSite(nextDraft);
+
+    if (previewTarget.type === "project") {
+      const { error } = await supabase
+        .from("ballz_projects")
+        .update({
+          name: nextDraft.name,
+          description: nextGenerated.summary,
+          site_spec: nextDraft,
+          generated_html: nextGenerated.html
+        })
+        .eq("id", previewTarget.id);
+
+      return error ? error.message : `Saved changes to project ${nextDraft.name}.`;
+    }
+
+    if (previewTarget.type === "template") {
+      const { error } = await supabase
+        .from("ballz_templates")
+        .update({
+          name: previewTarget.label,
+          description: nextGenerated.summary,
+          prompt: nextDraft.prompt,
+          site_spec: nextDraft
+        })
+        .eq("id", previewTarget.id);
+
+      return error ? error.message : `Saved changes to template ${previewTarget.label}.`;
+    }
+
+    const { error: pageError } = await supabase
+      .from("ballz_pages")
+      .update({
+        title: nextDraft.sections[0] || previewTarget.label,
+        slug: slugify(nextDraft.sections[0] || previewTarget.label),
+        content: nextDraft.prompt
+      })
+      .eq("id", previewTarget.id);
+
+    if (pageError) return pageError.message;
+
+    const { error: projectError } = await supabase
+      .from("ballz_projects")
+      .update({
+        name: nextDraft.name,
+        description: nextGenerated.summary,
+        site_spec: nextDraft,
+        generated_html: nextGenerated.html
+      })
+      .eq("id", previewTarget.projectId);
+
+    return projectError ? projectError.message : `Saved changes to page ${previewTarget.label}.`;
+  }
+
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const instruction = cleanText(chatInput);
@@ -680,18 +746,22 @@ export default function Home() {
     try {
       const result = await requestAiDraft(draft, pendingMessages, instruction);
       const nextDraft = applyDeterministicOverrides(result.draft, instruction, draft);
+      const persistence = await persistPreviewDraft(nextDraft);
       setDraft(nextDraft);
-      setPreviewSource("Builder chat");
+      setPreviewSource(previewTarget ? `${titleCase(previewTarget.type)}: ${previewTarget.label}` : "Builder chat");
       setMessages([...pendingMessages, { id: nextId + 1, role: "assistant", content: result.reply }]);
-      setStatus(result.reply);
+      setStatus([result.reply, persistence].filter(Boolean).join(" "));
+      if (persistence) await loadContent();
     } catch (error) {
       const nextDraft = applyInstruction(draft, instruction);
       const diagnostic = error instanceof Error ? error.message : "AI service is unavailable.";
       const reply = `${describeChanges(draft, nextDraft, instruction)} AI edit failed: ${diagnostic}`;
+      const persistence = await persistPreviewDraft(nextDraft);
       setDraft(nextDraft);
-      setPreviewSource("Builder chat");
+      setPreviewSource(previewTarget ? `${titleCase(previewTarget.type)}: ${previewTarget.label}` : "Builder chat");
       setMessages([...pendingMessages, { id: nextId + 1, role: "assistant", content: reply }]);
-      setStatus(reply);
+      setStatus([reply, persistence].filter(Boolean).join(" "));
+      if (persistence) await loadContent();
     } finally {
       setIsSending(false);
     }
@@ -725,6 +795,7 @@ export default function Home() {
       }
     ]);
     setPreviewSource("Starter draft");
+    setPreviewTarget(null);
     setStatus("Reset to the starter site.");
   }
 
@@ -1123,7 +1194,11 @@ export default function Home() {
             <div className="panelHeading">
               <div>
                 <h2>Builder Chat</h2>
-                <p>Ask for a new site, then keep refining the current draft until you are happy.</p>
+                <p>
+                  {previewTarget
+                    ? `Editing ${previewTarget.type}: ${previewTarget.label}. Chat changes auto-save to this record.`
+                    : "Ask for a new site, then keep refining the current draft until you are happy."}
+                </p>
               </div>
               <span>{messages.length} messages</span>
             </div>
