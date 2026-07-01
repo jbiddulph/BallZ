@@ -184,6 +184,20 @@ const colorRequests: Array<[string, Palette, string]> = [
 ];
 
 const initialSpec = createSpec(defaultPrompt, "modern", "landing");
+const appChromeTerms = [
+  "dashboard",
+  "projects",
+  "templates",
+  "settings",
+  "builder chat",
+  "generated code",
+  "live preview",
+  "siteforge",
+  "workspace",
+  "build credits",
+  "chat history",
+  "chat composer"
+];
 
 export default function Home() {
   const [draft, setDraft] = useState<SiteSpec>(initialSpec);
@@ -393,7 +407,12 @@ export default function Home() {
                 </button>
               </div>
             </div>
-            <iframe className={device === "mobile" ? "mobile" : ""} srcDoc={generated.html} title="Generated website preview" />
+            <iframe
+              className={device === "mobile" ? "mobile" : ""}
+              sandbox="allow-scripts"
+              srcDoc={generated.html}
+              title="Generated website preview"
+            />
           </div>
         </section>
 
@@ -520,7 +539,7 @@ function applyInstruction(current: SiteSpec, instruction: string): SiteSpec {
 
 function applyDeterministicOverrides(spec: SiteSpec, instruction: string, previous: SiteSpec): SiteSpec {
   const source = instruction.toLowerCase();
-  let next = { ...spec, palette: { ...spec.palette }, sections: [...spec.sections] };
+  let next = sanitizeDraft(spec, previous);
   const matchedPalette = colorRequests.find(([keyword]) => source.includes(keyword));
 
   if (!isNewBuildInstruction(instruction)) {
@@ -536,6 +555,28 @@ function applyDeterministicOverrides(spec: SiteSpec, instruction: string, previo
   }
 
   return next;
+}
+
+function sanitizeDraft(spec: SiteSpec, previous: SiteSpec): SiteSpec {
+  const sections = spec.sections
+    .filter((section) => section && !containsAppChrome(section))
+    .slice(0, 6);
+
+  return {
+    ...spec,
+    prompt: containsAppChrome(spec.prompt) ? previous.prompt : spec.prompt,
+    name: containsAppChrome(spec.name) ? previous.name : spec.name,
+    industry: containsAppChrome(spec.industry) ? previous.industry : spec.industry,
+    tone: containsAppChrome(spec.tone) ? previous.tone : spec.tone,
+    headline: containsAppChrome(spec.headline) ? previous.headline : spec.headline,
+    palette: { ...spec.palette },
+    sections: sections.length >= 3 ? sections : [...previous.sections]
+  };
+}
+
+function containsAppChrome(value: string) {
+  const normalized = value.toLowerCase();
+  return appChromeTerms.some((term) => normalized.includes(term));
 }
 
 function isNewBuildInstruction(instruction: string) {
@@ -733,6 +774,13 @@ function createSite(spec: SiteSpec): GeneratedSite {
       ? summaryText.charAt(0).toUpperCase() + summaryText.slice(1)
       : `${prefix}${summaryText}`;
   const css = createGeneratedCss(spec.palette);
+  const safeName = escapeHtml(spec.name);
+  const safeIndustry = escapeHtml(spec.industry);
+  const safeTone = escapeHtml(spec.tone);
+  const safeHeadline = escapeHtml(spec.headline);
+  const safePrompt = escapeHtml(spec.prompt);
+  const safeSummary = escapeHtml(summary);
+  const safeSections = spec.sections.map((section) => escapeHtml(section));
   const js = `const cta = document.querySelector(".nav-cta");
 cta?.addEventListener("click", () => {
   document.body.classList.add("cta-clicked");
@@ -743,16 +791,16 @@ cta?.addEventListener("click", () => {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${spec.name}</title>
+    <title>${safeName}</title>
     <style>
 ${css}
     </style>
   </head>
   <body>
     <header class="site-header">
-      <a class="logo" href="#">${spec.name}</a>
+      <a class="logo" href="#">${safeName}</a>
       <nav aria-label="Primary">
-        ${spec.sections
+        ${safeSections
           .slice(0, 3)
           .map((section) => `<a href="#${section.toLowerCase().replace(/\s+/g, "-")}">${section}</a>`)
           .join("\n        ")}
@@ -763,18 +811,18 @@ ${css}
     <main>
       <section class="hero">
         <div class="hero-copy">
-          <p class="kicker">${summary}</p>
-          <h1>${spec.headline}</h1>
-          <p class="lede">${spec.prompt}</p>
+          <p class="kicker">${safeSummary}</p>
+          <h1>${safeHeadline}</h1>
+          <p class="lede">${safePrompt}</p>
           <div class="hero-actions">
             <a class="button primary" href="#contact">Book a Consultation</a>
-            <a class="button ghost" href="#${spec.sections[0].toLowerCase().replace(/\s+/g, "-")}">Explore ${spec.sections[0]}</a>
+            <a class="button ghost" href="#${safeSections[0].toLowerCase().replace(/\s+/g, "-")}">Explore ${safeSections[0]}</a>
           </div>
         </div>
-        <div class="hero-visual" aria-label="${spec.name} visual preview">
+        <div class="hero-visual" aria-label="${safeName} visual preview">
           <div class="image-card main-card">
-            <span>${spec.industry}</span>
-            <strong>${spec.tone}</strong>
+            <span>${safeIndustry}</span>
+            <strong>${safeTone}</strong>
           </div>
           <div class="stat-card">
             <strong>4.9</strong>
@@ -783,8 +831,8 @@ ${css}
         </div>
       </section>
 
-      <section class="section-grid" id="${spec.sections[0].toLowerCase().replace(/\s+/g, "-")}">
-        ${spec.sections
+      <section class="section-grid" id="${safeSections[0].toLowerCase().replace(/\s+/g, "-")}">
+        ${safeSections
           .map(
             (section, index) => `
         <article>
@@ -811,8 +859,8 @@ ${css}
 
     <footer id="contact">
       <div>
-        <strong>${spec.name}</strong>
-        <p>Ready to launch the next version of your ${spec.industry}?</p>
+        <strong>${safeName}</strong>
+        <p>Ready to launch the next version of your ${safeIndustry}?</p>
       </div>
       <a class="button primary" href="mailto:hello@example.com">hello@example.com</a>
     </footer>
@@ -823,6 +871,15 @@ ${js}
 </html>`;
 
   return { html, css, js, name: spec.name, summary };
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function createSectionCopy(section: string, industry: string, tone: string) {

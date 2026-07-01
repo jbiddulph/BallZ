@@ -32,6 +32,20 @@ type ChatMessage = {
 };
 
 const hexPattern = "^#[0-9a-fA-F]{6}$";
+const appChromeTerms = [
+  "dashboard",
+  "projects",
+  "templates",
+  "settings",
+  "builder chat",
+  "generated code",
+  "live preview",
+  "siteforge",
+  "workspace",
+  "build credits",
+  "chat history",
+  "chat composer"
+];
 
 const siteUpdateSchema = {
   type: "object",
@@ -117,7 +131,7 @@ export async function POST(request: Request) {
         {
           role: "system",
           content:
-            "You are the website builder inside SiteForge. Update the current website draft to satisfy the user's latest instruction. Preserve good parts of the current draft unless the user asks for a new direction. If the user asks to change colors, update the palette. If they ask to move sections, reorder the sections array. If they ask for a different business, rewrite the site spec. The prompt field is public hero body copy; do not append edit instructions, API key comments, deployment notes, or chat meta into it. If the user asks to remove the leading article from the short summary, set summaryPrefix to none. Reply concisely with what changed."
+            "You are the website builder inside SiteForge. Update only the generated website draft to satisfy the user's latest instruction. Preserve good parts of the current draft unless the user asks for a new direction. If the user asks to change colors, update the palette. If they ask to move sections, reorder the sections array. If they ask for a different business, rewrite the site spec. The prompt field is public hero body copy; do not append edit instructions, API key comments, deployment notes, or chat meta into it. The preview website must never include the SiteForge app chrome or builder UI: no sidebar, Dashboard, Projects, Templates, Settings, Builder Chat, Live Preview, Generated Code, chat controls, or build credits. If a user mentions the top menu, treat it as the generated website nav only. If the user asks to remove the leading article from the short summary, set summaryPrefix to none. Reply concisely with what changed."
         },
         {
           role: "user",
@@ -168,8 +182,10 @@ function getSafeErrorMessage(error: unknown) {
 }
 
 function normalizeDraft(next: SiteSpec, fallback: SiteSpec): SiteSpec {
+  const sections = sanitizeSections(next.sections, fallback.sections);
+
   return {
-    prompt: next.prompt || fallback.prompt,
+    prompt: containsAppChrome(next.prompt) ? fallback.prompt : next.prompt || fallback.prompt,
     style: next.style || fallback.style,
     pageType: next.pageType || fallback.pageType,
     palette: {
@@ -180,11 +196,25 @@ function normalizeDraft(next: SiteSpec, fallback: SiteSpec): SiteSpec {
       secondary: next.palette?.secondary || fallback.palette.secondary,
       surface: next.palette?.surface || fallback.palette.surface
     },
-    name: next.name || fallback.name,
-    industry: next.industry || fallback.industry,
-    tone: next.tone || fallback.tone,
-    sections: next.sections?.length ? next.sections.slice(0, 6) : fallback.sections,
-    headline: next.headline || fallback.headline,
+    name: containsAppChrome(next.name) ? fallback.name : next.name || fallback.name,
+    industry: containsAppChrome(next.industry) ? fallback.industry : next.industry || fallback.industry,
+    tone: containsAppChrome(next.tone) ? fallback.tone : next.tone || fallback.tone,
+    sections,
+    headline: containsAppChrome(next.headline) ? fallback.headline : next.headline || fallback.headline,
     summaryPrefix: next.summaryPrefix || fallback.summaryPrefix
   };
+}
+
+function sanitizeSections(nextSections: string[] | undefined, fallbackSections: string[]) {
+  const sections = (nextSections || [])
+    .filter((section) => section && !containsAppChrome(section))
+    .slice(0, 6);
+
+  return sections.length >= 3 ? sections : fallbackSections;
+}
+
+function containsAppChrome(value: string | undefined) {
+  if (!value) return false;
+  const normalized = value.toLowerCase();
+  return appChromeTerms.some((term) => normalized.includes(term));
 }
