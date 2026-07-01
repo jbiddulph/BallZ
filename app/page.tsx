@@ -22,12 +22,13 @@ import {
   Sparkles,
   Smartphone,
   Trash2,
+  Users,
   UserPlus
 } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "../utils/supabase/client";
 import { isSupabaseConfigured } from "../utils/supabase/env";
-import type { BallzPage, BallzProject, BallzTemplate } from "../utils/supabase/types";
+import type { BallzPage, BallzProject, BallzTemplate, BallzUser } from "../utils/supabase/types";
 
 type StyleKey = "modern" | "editorial" | "startup" | "luxury";
 type PageType = "landing" | "sales" | "portfolio";
@@ -72,8 +73,17 @@ type GeneratedSite = {
 };
 
 type AuthMode = "signin" | "signup";
-type ContentView = "builder" | "projects" | "pages" | "templates";
+type ContentView = "builder" | "users" | "projects" | "pages" | "templates";
 type ProjectStatus = "draft" | "published" | "archived";
+type UserRole = "owner" | "editor" | "viewer";
+
+type UserForm = {
+  id: string | null;
+  email: string;
+  display_name: string;
+  company_name: string;
+  role: UserRole;
+};
 
 type ProjectForm = {
   id: string | null;
@@ -261,9 +271,17 @@ export default function Home() {
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [isDataBusy, setIsDataBusy] = useState(false);
   const [contentView, setContentView] = useState<ContentView>("builder");
+  const [userProfiles, setUserProfiles] = useState<BallzUser[]>([]);
   const [projects, setProjects] = useState<BallzProject[]>([]);
   const [pages, setPages] = useState<BallzPage[]>([]);
   const [templates, setTemplates] = useState<BallzTemplate[]>([]);
+  const [userForm, setUserForm] = useState<UserForm>({
+    id: null,
+    email: "",
+    display_name: "",
+    company_name: "",
+    role: "owner"
+  });
   const [projectForm, setProjectForm] = useState<ProjectForm>({
     id: null,
     name: "",
@@ -325,12 +343,18 @@ export default function Home() {
 
   useEffect(() => {
     if (!user) {
+      setUserProfiles([]);
       setProjects([]);
       setPages([]);
       setTemplates([]);
+      setUserForm({ id: null, email: "", display_name: "", company_name: "", role: "owner" });
       return;
     }
 
+    setUserForm((current) => ({
+      ...current,
+      email: current.email || user.email || ""
+    }));
     loadContent();
   }, [user]);
 
@@ -375,21 +399,53 @@ export default function Home() {
     if (!supabase || !user) return;
 
     setIsDataBusy(true);
-    const [projectResult, pageResult, templateResult] = await Promise.all([
+    const [userResult, projectResult, pageResult, templateResult] = await Promise.all([
+      supabase.from("ballz_users").select("*").order("updated_at", { ascending: false }),
       supabase.from("ballz_projects").select("*").order("updated_at", { ascending: false }),
       supabase.from("ballz_pages").select("*").order("sort_order", { ascending: true }),
       supabase.from("ballz_templates").select("*").order("updated_at", { ascending: false })
     ]);
 
-    if (projectResult.error || pageResult.error || templateResult.error) {
-      setStatus(projectResult.error?.message || pageResult.error?.message || templateResult.error?.message || "Could not load Supabase content.");
+    if (userResult.error || projectResult.error || pageResult.error || templateResult.error) {
+      setStatus(
+        userResult.error?.message ||
+          projectResult.error?.message ||
+          pageResult.error?.message ||
+          templateResult.error?.message ||
+          "Could not load Supabase content."
+      );
     } else {
+      setUserProfiles((userResult.data || []) as BallzUser[]);
       setProjects((projectResult.data || []) as BallzProject[]);
       setPages((pageResult.data || []) as BallzPage[]);
       setTemplates((templateResult.data || []) as BallzTemplate[]);
-      setStatus("Synced projects, pages, and templates from Supabase.");
+      setStatus("Synced users, projects, pages, and templates from Supabase.");
     }
 
+    setIsDataBusy(false);
+  }
+
+  async function saveUserProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || !user || !userForm.email.trim()) return;
+
+    setIsDataBusy(true);
+    const payload = {
+      user_id: user.id,
+      email: userForm.email.trim(),
+      display_name: cleanText(userForm.display_name) || null,
+      company_name: cleanText(userForm.company_name) || null,
+      role: userForm.role
+    };
+    const result = userForm.id
+      ? await supabase.from("ballz_users").update(payload).eq("id", userForm.id)
+      : await supabase.from("ballz_users").insert(payload);
+
+    setStatus(result.error ? result.error.message : `Saved ${payload.email}.`);
+    if (!result.error) {
+      setUserForm({ id: null, email: user.email || "", display_name: "", company_name: "", role: "owner" });
+      await loadContent();
+    }
     setIsDataBusy(false);
   }
 
@@ -478,7 +534,7 @@ export default function Home() {
     setIsDataBusy(false);
   }
 
-  async function deleteRow(table: "ballz_projects" | "ballz_pages" | "ballz_templates", id: string, label: string) {
+  async function deleteRow(table: "ballz_users" | "ballz_projects" | "ballz_pages" | "ballz_templates", id: string, label: string) {
     if (!supabase || !confirm(`Delete ${label}?`)) return;
 
     setIsDataBusy(true);
@@ -486,6 +542,17 @@ export default function Home() {
     setStatus(result.error ? result.error.message : `Deleted ${label}.`);
     if (!result.error) await loadContent();
     setIsDataBusy(false);
+  }
+
+  function editUserProfile(profile: BallzUser) {
+    setUserForm({
+      id: profile.id,
+      email: profile.email,
+      display_name: profile.display_name || "",
+      company_name: profile.company_name || "",
+      role: profile.role
+    });
+    setContentView("users");
   }
 
   function editProject(project: BallzProject) {
@@ -605,6 +672,9 @@ export default function Home() {
           <button className={`navItem ${contentView === "builder" ? "active" : ""}`} onClick={() => setContentView("builder")} type="button">
             <LayoutDashboard size={18} /> Dashboard
           </button>
+          <button className={`navItem ${contentView === "users" ? "active" : ""}`} onClick={() => setContentView("users")} type="button">
+            <Users size={18} /> Users
+          </button>
           <button className={`navItem ${contentView === "projects" ? "active" : ""}`} onClick={() => setContentView("projects")} type="button">
             <FileStack size={18} /> Projects
           </button>
@@ -612,7 +682,7 @@ export default function Home() {
             <Sparkles size={18} /> Templates
           </button>
           <button className={`navItem ${contentView === "pages" ? "active" : ""}`} onClick={() => setContentView("pages")} type="button">
-            <Settings size={18} /> Settings
+            <Settings size={18} /> Pages
           </button>
         </nav>
 
@@ -651,7 +721,7 @@ export default function Home() {
               <div>
                 <p className="eyebrow">Signed in</p>
                 <h2>{user.email}</h2>
-                <p>Projects, pages, and templates are stored in Supabase under your account.</p>
+                <p>Users, projects, pages, and templates are stored in Supabase under your account.</p>
               </div>
               <div className="topbarActions">
                 <button className="secondaryAction" onClick={loadContent} disabled={isDataBusy} type="button">
@@ -667,7 +737,7 @@ export default function Home() {
               <div>
                 <p className="eyebrow">Account</p>
                 <h2>Sign in to save and manage work.</h2>
-                <p>Use Supabase Auth to keep each user's projects, pages, and templates private.</p>
+                <p>Use Supabase Auth to keep each user's profile, projects, pages, and templates private.</p>
               </div>
               <form className="authForm" onSubmit={handleAuth}>
                 <div className="authMode" aria-label="Auth mode">
@@ -715,10 +785,10 @@ export default function Home() {
             <div className="panelHeading compact">
               <div>
                 <h2>Content Library</h2>
-                <p>Manage Supabase-backed projects, pages, and reusable templates.</p>
+                <p>Manage Supabase-backed users, projects, pages, and reusable templates.</p>
               </div>
               <div className="tabs" role="tablist" aria-label="Content views">
-                {(["projects", "pages", "templates"] as ContentView[]).map((view) => (
+                {(["users", "projects", "pages", "templates"] as ContentView[]).map((view) => (
                   <button
                     className={contentView === view ? "active" : ""}
                     key={view}
@@ -726,6 +796,7 @@ export default function Home() {
                     role="tab"
                     type="button"
                   >
+                    {view === "users" ? <Users size={16} /> : null}
                     {view === "projects" ? <FolderKanban size={16} /> : null}
                     {view === "pages" ? <FileText size={16} /> : null}
                     {view === "templates" ? <Sparkles size={16} /> : null}
@@ -734,6 +805,68 @@ export default function Home() {
                 ))}
               </div>
             </div>
+
+            {contentView === "users" ? (
+              <div className="dataGrid">
+                <form className="dataForm" onSubmit={saveUserProfile}>
+                  <h3>{userForm.id ? "Edit user" : "New user profile"}</h3>
+                  <p className="formNote">This manages the `ballz_users` profile row for the signed-in account.</p>
+                  <label>
+                    Email
+                    <input value={userForm.email} onChange={(event) => setUserForm({ ...userForm, email: event.target.value })} />
+                  </label>
+                  <label>
+                    Display name
+                    <input value={userForm.display_name} onChange={(event) => setUserForm({ ...userForm, display_name: event.target.value })} />
+                  </label>
+                  <label>
+                    Company
+                    <input value={userForm.company_name} onChange={(event) => setUserForm({ ...userForm, company_name: event.target.value })} />
+                  </label>
+                  <label>
+                    Role
+                    <select value={userForm.role} onChange={(event) => setUserForm({ ...userForm, role: event.target.value as UserRole })}>
+                      <option value="owner">Owner</option>
+                      <option value="editor">Editor</option>
+                      <option value="viewer">Viewer</option>
+                    </select>
+                  </label>
+                  <div className="buttonRow">
+                    <button className="primaryAction" disabled={isDataBusy} type="submit">
+                      <Save size={17} /> Save user
+                    </button>
+                    {userForm.id ? (
+                      <button
+                        className="secondaryAction"
+                        onClick={() => setUserForm({ id: null, email: user?.email || "", display_name: "", company_name: "", role: "owner" })}
+                        type="button"
+                      >
+                        Cancel
+                      </button>
+                    ) : null}
+                  </div>
+                </form>
+                <div className="recordList">
+                  {userProfiles.map((profile) => (
+                    <article className="recordCard" key={profile.id}>
+                      <span>{profile.role}</span>
+                      <h3>{profile.display_name || profile.email}</h3>
+                      <p>{profile.company_name || "No company set."}</p>
+                      <p>{profile.email}</p>
+                      <div className="recordActions">
+                        <button onClick={() => editUserProfile(profile)} type="button">
+                          <Edit3 size={15} /> Edit
+                        </button>
+                        <button onClick={() => deleteRow("ballz_users", profile.id, profile.email)} type="button">
+                          <Trash2 size={15} /> Delete
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                  {userProfiles.length === 0 ? <p className="emptyState">No user profile yet. Create one for this signed-in account.</p> : null}
+                </div>
+              </div>
+            ) : null}
 
             {contentView === "projects" ? (
               <div className="dataGrid">

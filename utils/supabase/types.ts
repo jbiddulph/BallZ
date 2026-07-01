@@ -1,3 +1,14 @@
+export type BallzUser = {
+  id: string;
+  user_id: string;
+  email: string;
+  display_name: string | null;
+  company_name: string | null;
+  role: "owner" | "editor" | "viewer";
+  created_at: string;
+  updated_at: string;
+};
+
 export type BallzProject = {
   id: string;
   user_id: string;
