@@ -27,11 +27,11 @@ import {
 import type { User } from "@supabase/supabase-js";
 import { createClient } from "../utils/supabase/client";
 import { isSupabaseConfigured } from "../utils/supabase/env";
-import type { BallzPage, BallzProject, BallzTemplate, BallzUser } from "../utils/supabase/types";
+import type { BallzLayout, BallzPage, BallzProject, BallzTemplate, BallzUser } from "../utils/supabase/types";
 
 type StyleKey = "modern" | "editorial" | "startup" | "luxury";
 type PageType = "landing" | "sales" | "portfolio";
-type CodeTab = "page" | "css" | "client";
+type CodeTab = "layout" | "page" | "css" | "client";
 type Device = "desktop" | "mobile";
 type Role = "assistant" | "user";
 
@@ -73,6 +73,7 @@ type GeneratedSite = {
   html: string;
   css: string;
   js: string;
+  layout: string;
   page: string;
   client: string;
   name: string;
@@ -80,12 +81,13 @@ type GeneratedSite = {
 };
 
 type AuthMode = "signin" | "signup";
-type ContentView = "builder" | "users" | "projects" | "pages" | "templates";
+type ContentView = "builder" | "users" | "projects" | "pages" | "layouts" | "templates";
 type ProjectStatus = "draft" | "published" | "archived";
 type UserRole = "owner" | "editor" | "viewer";
 type PreviewTarget =
   | { type: "project"; id: string; label: string }
   | { type: "page"; id: string; projectId: string; label: string }
+  | { type: "layout"; id: string; projectId: string; label: string }
   | { type: "template"; id: string; label: string }
   | null;
 
@@ -118,6 +120,15 @@ type TemplateForm = {
   name: string;
   description: string;
   prompt: string;
+};
+
+type LayoutForm = {
+  id: string | null;
+  project_id: string;
+  name: string;
+  description: string;
+  layout_code: string;
+  sort_order: number;
 };
 
 const defaultPrompt =
@@ -286,6 +297,7 @@ export default function Home() {
   const [userProfiles, setUserProfiles] = useState<BallzUser[]>([]);
   const [projects, setProjects] = useState<BallzProject[]>([]);
   const [pages, setPages] = useState<BallzPage[]>([]);
+  const [layouts, setLayouts] = useState<BallzLayout[]>([]);
   const [templates, setTemplates] = useState<BallzTemplate[]>([]);
   const [userForm, setUserForm] = useState<UserForm>({
     id: null,
@@ -306,6 +318,14 @@ export default function Home() {
     title: "",
     slug: "",
     content: "",
+    sort_order: 0
+  });
+  const [layoutForm, setLayoutForm] = useState<LayoutForm>({
+    id: null,
+    project_id: "",
+    name: "Root layout",
+    description: "",
+    layout_code: "",
     sort_order: 0
   });
   const [templateForm, setTemplateForm] = useState<TemplateForm>({
@@ -329,7 +349,7 @@ export default function Home() {
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget>(null);
 
   const generated = useMemo(() => createSite(draft), [draft]);
-  const code = generated[activeTab];
+  const code = activeTab === "layout" && layoutForm.layout_code.trim() ? layoutForm.layout_code : generated[activeTab];
   const selectedProjectName =
     projects.find((project) => project.id === pageForm.project_id)?.name || "No project selected";
   const pagesByProject = useMemo(() => {
@@ -368,8 +388,10 @@ export default function Home() {
       setUserProfiles([]);
       setProjects([]);
       setPages([]);
+      setLayouts([]);
       setTemplates([]);
       setUserForm({ id: null, email: "", display_name: "", company_name: "", role: "owner" });
+      setLayoutForm({ id: null, project_id: "", name: "Root layout", description: "", layout_code: "", sort_order: 0 });
       return;
     }
 
@@ -384,7 +406,10 @@ export default function Home() {
     if (!pageForm.project_id && projects[0]) {
       setPageForm((current) => ({ ...current, project_id: projects[0].id }));
     }
-  }, [projects, pageForm.project_id]);
+    if (!layoutForm.project_id && projects[0]) {
+      setLayoutForm((current) => ({ ...current, project_id: projects[0].id }));
+    }
+  }, [projects, pageForm.project_id, layoutForm.project_id]);
 
   async function handleAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -421,18 +446,22 @@ export default function Home() {
     if (!supabase || !user) return;
 
     setIsDataBusy(true);
-    const [userResult, projectResult, pageResult, templateResult] = await Promise.all([
+    const [userResult, projectResult, pageResult, layoutResult, templateResult] = await Promise.all([
       supabase.from("ballz_users").select("*").order("updated_at", { ascending: false }),
       supabase.from("ballz_projects").select("*").order("updated_at", { ascending: false }),
       supabase.from("ballz_pages").select("*").order("sort_order", { ascending: true }),
+      supabase.from("ballz_layouts").select("*").order("sort_order", { ascending: true }),
       supabase.from("ballz_templates").select("*").order("updated_at", { ascending: false })
     ]);
 
-    if (userResult.error || projectResult.error || pageResult.error || templateResult.error) {
+    const isLayoutsTableMissing = layoutResult.error?.code === "42P01";
+
+    if (userResult.error || projectResult.error || pageResult.error || (layoutResult.error && !isLayoutsTableMissing) || templateResult.error) {
       setStatus(
         userResult.error?.message ||
           projectResult.error?.message ||
           pageResult.error?.message ||
+          (isLayoutsTableMissing ? null : layoutResult.error?.message) ||
           templateResult.error?.message ||
           "Could not load Supabase content."
       );
@@ -440,8 +469,13 @@ export default function Home() {
       setUserProfiles((userResult.data || []) as BallzUser[]);
       setProjects((projectResult.data || []) as BallzProject[]);
       setPages((pageResult.data || []) as BallzPage[]);
+      setLayouts(isLayoutsTableMissing ? [] : ((layoutResult.data || []) as BallzLayout[]));
       setTemplates((templateResult.data || []) as BallzTemplate[]);
-      setStatus("Synced users, projects, pages, and templates from Supabase.");
+      setStatus(
+        isLayoutsTableMissing
+          ? "Synced users, projects, pages, and templates. Apply the ballz_layouts migration to enable layouts."
+          : "Synced users, projects, pages, layouts, and templates from Supabase."
+      );
     }
 
     setIsDataBusy(false);
@@ -532,6 +566,31 @@ export default function Home() {
     setIsDataBusy(false);
   }
 
+  async function saveLayout(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || !user || !layoutForm.project_id || !layoutForm.name.trim()) return;
+
+    setIsDataBusy(true);
+    const payload = {
+      user_id: user.id,
+      project_id: layoutForm.project_id,
+      name: layoutForm.name.trim(),
+      description: cleanText(layoutForm.description) || null,
+      layout_code: layoutForm.layout_code.trim() || generated.layout,
+      sort_order: Number.isFinite(layoutForm.sort_order) ? layoutForm.sort_order : 0
+    };
+    const result = layoutForm.id
+      ? await supabase.from("ballz_layouts").update(payload).eq("id", layoutForm.id)
+      : await supabase.from("ballz_layouts").insert(payload);
+
+    setStatus(result.error ? result.error.message : `Saved ${payload.name}.`);
+    if (!result.error) {
+      setLayoutForm({ id: null, project_id: payload.project_id, name: "Root layout", description: "", layout_code: "", sort_order: 0 });
+      await loadContent();
+    }
+    setIsDataBusy(false);
+  }
+
   async function saveTemplate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!supabase || !user || !templateForm.name.trim() || !templateForm.prompt.trim()) return;
@@ -556,7 +615,7 @@ export default function Home() {
     setIsDataBusy(false);
   }
 
-  async function deleteRow(table: "ballz_users" | "ballz_projects" | "ballz_pages" | "ballz_templates", id: string, label: string) {
+  async function deleteRow(table: "ballz_users" | "ballz_projects" | "ballz_pages" | "ballz_layouts" | "ballz_templates", id: string, label: string) {
     if (!supabase || !confirm(`Delete ${label}?`)) return;
 
     setIsDataBusy(true);
@@ -627,7 +686,7 @@ export default function Home() {
       prompt: page.content || baseDraft.prompt,
       name: project?.name || baseDraft.name,
       headline: `${page.title} for ${project?.name || baseDraft.name}.`,
-      sections: pageSections.length >= 3 ? pageSections.slice(0, 6) : baseDraft.sections
+      sections: mergePageSections(pageSections, baseDraft.sections)
     };
 
     setDraft(nextDraft);
@@ -635,6 +694,29 @@ export default function Home() {
     setPreviewSource(`Page: ${page.title}`);
     setPreviewTarget({ type: "page", id: page.id, projectId: page.project_id, label: page.title });
     setStatus(`Loaded ${page.title} into the live preview.`);
+  }
+
+  function editLayout(layout: BallzLayout) {
+    setLayoutForm({
+      id: layout.id,
+      project_id: layout.project_id,
+      name: layout.name,
+      description: layout.description || "",
+      layout_code: layout.layout_code,
+      sort_order: layout.sort_order
+    });
+    setContentView("layouts");
+  }
+
+  function previewLayout(layout: BallzLayout) {
+    const project = projects.find((item) => item.id === layout.project_id);
+    const nextDraft = project ? createDraftFromProject(project) : draft;
+    setDraft(nextDraft);
+    editLayout(layout);
+    setActiveTab("layout");
+    setPreviewSource(`Layout: ${layout.name}`);
+    setPreviewTarget({ type: "layout", id: layout.id, projectId: layout.project_id, label: layout.name });
+    setStatus(`Loaded ${layout.name} into the generated layout file.`);
   }
 
   function editTemplate(template: BallzTemplate) {
@@ -667,13 +749,13 @@ export default function Home() {
     const projectPages = pagesByProject[project.id] || [];
     const pageSections = projectPages.map((page) => page.title).filter(Boolean);
 
-    return {
-      ...baseDraft,
-      name: project.name,
-      prompt: project.description || baseDraft.prompt,
-      sections: pageSections.length >= 3 ? pageSections.slice(0, 6) : baseDraft.sections
-    };
-  }
+  return {
+    ...baseDraft,
+    name: project.name,
+    prompt: project.description || baseDraft.prompt,
+    sections: mergePageSections(pageSections, baseDraft.sections)
+  };
+}
 
   function createDraftFromTemplate(template: BallzTemplate) {
     const fallback = createSpec(template.prompt, "modern", "landing");
@@ -711,6 +793,31 @@ export default function Home() {
         .eq("id", previewTarget.id);
 
       return error ? error.message : `Saved changes to template ${previewTarget.label}.`;
+    }
+
+    if (previewTarget.type === "layout") {
+      const { error: layoutError } = await supabase
+        .from("ballz_layouts")
+        .update({
+          name: previewTarget.label,
+          description: nextGenerated.summary,
+          layout_code: nextGenerated.layout
+        })
+        .eq("id", previewTarget.id);
+
+      if (layoutError) return layoutError.message;
+
+      const { error: projectError } = await supabase
+        .from("ballz_projects")
+        .update({
+          name: nextDraft.name,
+          description: nextGenerated.summary,
+          site_spec: nextDraft,
+          generated_html: nextGenerated.html
+        })
+        .eq("id", previewTarget.projectId);
+
+      return projectError ? projectError.message : `Saved changes to layout ${previewTarget.label}.`;
     }
 
     const { error: pageError } = await supabase
@@ -751,6 +858,9 @@ export default function Home() {
     setIsSending(true);
     const optimisticDraft = applyInstruction(draft, instruction);
     setDraft(optimisticDraft);
+    if (previewTarget?.type === "layout") {
+      setLayoutForm((current) => ({ ...current, layout_code: createSite(optimisticDraft).layout }));
+    }
     setPreviewSource(previewTarget ? `${titleCase(previewTarget.type)}: ${previewTarget.label}` : "Builder chat");
     setStatus("Updating preview now, then saving the refined draft...");
 
@@ -758,6 +868,9 @@ export default function Home() {
       const result = await requestAiDraft(draft, pendingMessages, instruction);
       const nextDraft = applyDeterministicOverrides(result.draft, instruction, draft);
       setDraft(nextDraft);
+      if (previewTarget?.type === "layout") {
+        setLayoutForm((current) => ({ ...current, layout_code: createSite(nextDraft).layout }));
+      }
       setMessages([...pendingMessages, { id: nextId + 1, role: "assistant", content: result.reply }]);
       setStatus(result.reply);
 
@@ -837,6 +950,9 @@ export default function Home() {
           <button className={`navItem ${contentView === "pages" ? "active" : ""}`} onClick={() => setContentView("pages")} type="button">
             <Settings size={18} /> Pages
           </button>
+          <button className={`navItem ${contentView === "layouts" ? "active" : ""}`} onClick={() => setContentView("layouts")} type="button">
+            <LayoutDashboard size={18} /> Layouts
+          </button>
         </nav>
 
         <div className="usagePanel">
@@ -874,7 +990,7 @@ export default function Home() {
               <div>
                 <p className="eyebrow">Signed in</p>
                 <h2>{user.email}</h2>
-                <p>Users, projects, pages, and templates are stored in Supabase under your account.</p>
+                <p>Users, projects, pages, layouts, and templates are stored in Supabase under your account.</p>
               </div>
               <div className="topbarActions">
                 <button className="secondaryAction" onClick={loadContent} disabled={isDataBusy} type="button">
@@ -890,7 +1006,7 @@ export default function Home() {
               <div>
                 <p className="eyebrow">Account</p>
                 <h2>Sign in to save and manage work.</h2>
-                <p>Use Supabase Auth to keep each user's profile, projects, pages, and templates private.</p>
+                <p>Use Supabase Auth to keep each user's profile, projects, pages, layouts, and templates private.</p>
               </div>
               <form className="authForm" onSubmit={handleAuth}>
                 <div className="authMode" aria-label="Auth mode">
@@ -938,10 +1054,10 @@ export default function Home() {
             <div className="panelHeading compact">
               <div>
                 <h2>Content Library</h2>
-                <p>Manage Supabase-backed users, projects, pages, and reusable templates.</p>
+                <p>Manage Supabase-backed users, projects, pages, layouts, and reusable templates.</p>
               </div>
               <div className="tabs" role="tablist" aria-label="Content views">
-                {(["users", "projects", "pages", "templates"] as ContentView[]).map((view) => (
+                {(["users", "projects", "pages", "layouts", "templates"] as ContentView[]).map((view) => (
                   <button
                     className={contentView === view ? "active" : ""}
                     key={view}
@@ -952,6 +1068,7 @@ export default function Home() {
                     {view === "users" ? <Users size={16} /> : null}
                     {view === "projects" ? <FolderKanban size={16} /> : null}
                     {view === "pages" ? <FileText size={16} /> : null}
+                    {view === "layouts" ? <LayoutDashboard size={16} /> : null}
                     {view === "templates" ? <Sparkles size={16} /> : null}
                     {titleCase(view)}
                   </button>
@@ -1147,6 +1264,85 @@ export default function Home() {
               </div>
             ) : null}
 
+            {contentView === "layouts" ? (
+              <div className="dataGrid">
+                <form className="dataForm" onSubmit={saveLayout}>
+                  <h3>{layoutForm.id ? "Edit layout" : "New layout"}</h3>
+                  <p className="formNote">Project: {projects.find((project) => project.id === layoutForm.project_id)?.name || "No project selected"}</p>
+                  <label>
+                    Project
+                    <select value={layoutForm.project_id} onChange={(event) => setLayoutForm({ ...layoutForm, project_id: event.target.value })}>
+                      <option value="">Choose a project</option>
+                      {projects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Name
+                    <input value={layoutForm.name} onChange={(event) => setLayoutForm({ ...layoutForm, name: event.target.value })} />
+                  </label>
+                  <label>
+                    Description
+                    <textarea value={layoutForm.description} onChange={(event) => setLayoutForm({ ...layoutForm, description: event.target.value })} />
+                  </label>
+                  <label>
+                    Layout code
+                    <textarea
+                      value={layoutForm.layout_code}
+                      onChange={(event) => setLayoutForm({ ...layoutForm, layout_code: event.target.value })}
+                      placeholder="Leave empty to save the current generated app/layout.tsx"
+                    />
+                  </label>
+                  <label>
+                    Sort order
+                    <input
+                      type="number"
+                      value={layoutForm.sort_order}
+                      onChange={(event) => setLayoutForm({ ...layoutForm, sort_order: Number(event.target.value) })}
+                    />
+                  </label>
+                  <div className="buttonRow">
+                    <button className="primaryAction" disabled={isDataBusy || !projects.length} type="submit">
+                      <Save size={17} /> Save layout
+                    </button>
+                    {layoutForm.id ? (
+                      <button
+                        className="secondaryAction"
+                        onClick={() => setLayoutForm({ id: null, project_id: layoutForm.project_id, name: "Root layout", description: "", layout_code: "", sort_order: 0 })}
+                        type="button"
+                      >
+                        Cancel
+                      </button>
+                    ) : null}
+                  </div>
+                </form>
+                <div className="recordList">
+                  {layouts.map((layout) => (
+                    <article className="recordCard" key={layout.id}>
+                      <span>{projects.find((project) => project.id === layout.project_id)?.name || "Project"}</span>
+                      <h3>{layout.name}</h3>
+                      <p>{layout.description || "Controls generated app/layout.tsx for this project."}</p>
+                      <div className="recordActions">
+                        <button onClick={() => previewLayout(layout)} type="button">
+                          <Monitor size={15} /> Preview
+                        </button>
+                        <button onClick={() => editLayout(layout)} type="button">
+                          <Edit3 size={15} /> Edit
+                        </button>
+                        <button onClick={() => deleteRow("ballz_layouts", layout.id, layout.name)} type="button">
+                          <Trash2 size={15} /> Delete
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                  {layouts.length === 0 ? <p className="emptyState">No layouts yet. Save the current generated app/layout.tsx for a project.</p> : null}
+                </div>
+              </div>
+            ) : null}
+
             {contentView === "templates" ? (
               <div className="dataGrid">
                 <form className="dataForm" onSubmit={saveTemplate}>
@@ -1296,7 +1492,7 @@ export default function Home() {
               <p>Review the generated app files before exporting.</p>
             </div>
             <div className="tabs" role="tablist" aria-label="Code views">
-              {(["page", "css", "client"] as CodeTab[]).map((tab) => (
+              {(["layout", "page", "css", "client"] as CodeTab[]).map((tab) => (
                 <button
                   className={activeTab === tab ? "active" : ""}
                   key={tab}
@@ -1304,7 +1500,7 @@ export default function Home() {
                   role="tab"
                   type="button"
                 >
-                  {tab === "page" ? <Code2 size={16} /> : null}
+                  {tab === "layout" ? <Code2 size={16} /> : null}
                   {getCodeTabFileName(tab)}
                 </button>
               ))}
@@ -1691,12 +1887,14 @@ function slugify(text: string) {
 }
 
 function getCodeTabFileName(tab: CodeTab) {
+  if (tab === "layout") return "app/layout.tsx";
   if (tab === "page") return "app/page.tsx";
   if (tab === "css") return "app/generated-site.css";
   return "app/generated-site.client.tsx";
 }
 
 function getCodeTabDownloadName(tab: CodeTab) {
+  if (tab === "layout") return "layout.tsx";
   if (tab === "page") return "page.tsx";
   if (tab === "css") return "generated-site.css";
   return "generated-site.client.tsx";
@@ -1859,6 +2057,15 @@ function getSections(pageType: PageType, industry: string) {
   return ["Services", "Highlights", "Pricing", "Testimonials"];
 }
 
+function mergePageSections(pageSections: string[], fallbackSections: string[]) {
+  const merged = [...pageSections, ...fallbackSections].reduce<string[]>((sections, section) => {
+    if (!section || sections.some((item) => item.toLowerCase() === section.toLowerCase())) return sections;
+    return [...sections, section];
+  }, []);
+
+  return merged.slice(0, 6);
+}
+
 function createSite(spec: SiteSpec): GeneratedSite {
   const safeSpecForPreview = sanitizeSpecForPreview(spec);
   const adjective =
@@ -1884,6 +2091,10 @@ function createSite(spec: SiteSpec): GeneratedSite {
   const safePrompt = escapeHtml(safeSpecForPreview.prompt);
   const safeSummary = escapeHtml(summary);
   const safeSections = safeSpecForPreview.sections.map((section) => escapeHtml(section));
+  const navLinks = safeSpecForPreview.sections.map((section) => ({
+    label: section,
+    href: `#${slugify(section)}`
+  }));
   const nextSections = safeSpecForPreview.sections.map((section) => ({
     title: section,
     copy: createSectionCopy(section, safeSpecForPreview.industry, safeSpecForPreview.tone)
@@ -1917,6 +2128,12 @@ ${css}
   <body>
     <header class="site-header">
       <span class="logo">${safeName}</span>
+      <nav class="site-nav" aria-label="${safeName} pages">
+        ${navLinks
+          .map((link) => `<a href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`)
+          .join("\n        ")}
+        <a href="#contact">Start</a>
+      </nav>
     </header>
 
     <main>
@@ -1927,7 +2144,7 @@ ${css}
           <p class="lede">${safePrompt}</p>
           <div class="hero-actions">
             <a class="button primary" href="#contact">Book a Consultation</a>
-            <a class="button ghost" href="#${safeSections[0].toLowerCase().replace(/\s+/g, "-")}">Explore ${safeSections[0]}</a>
+            <a class="button ghost" href="#${slugify(safeSpecForPreview.sections[0] || "sections")}">Explore ${safeSections[0]}</a>
           </div>
         </div>
         <div class="hero-visual" aria-label="${safeName} visual preview">
@@ -1942,11 +2159,11 @@ ${css}
         </div>
       </section>
 
-      <section class="section-grid" id="${safeSections[0].toLowerCase().replace(/\s+/g, "-")}">
+      <section class="section-grid" id="${slugify(safeSpecForPreview.sections[0] || "sections")}">
         ${safeSections
           .map(
             (section, index) => `
-        <article>
+        <article id="${slugify(safeSpecForPreview.sections[index] || section)}">
           <span>0${index + 1}</span>
           <h2>${section}</h2>
           <p>${createSectionCopy(section, safeSpecForPreview.industry, safeSpecForPreview.tone)}</p>
@@ -1980,6 +2197,10 @@ ${js}
     </script>
   </body>
 </html>`;
+  const layout = createNextLayoutCode({
+    name: safeSpecForPreview.name,
+    summary
+  });
   const page = createNextPageCode({
     name: safeSpecForPreview.name,
     industry: safeSpecForPreview.industry,
@@ -1987,11 +2208,12 @@ ${js}
     headline: safeSpecForPreview.headline,
     prompt: safeSpecForPreview.prompt,
     summary,
+    navLinks,
     sections: nextSections
   });
   const client = createNextClientCode(customJs);
 
-  return { html, css, js, page, client, name: safeSpecForPreview.name, summary };
+  return { html, css, js, layout, page, client, name: safeSpecForPreview.name, summary };
 }
 
 function escapeHtml(value: string) {
@@ -2003,6 +2225,29 @@ function escapeHtml(value: string) {
     .replaceAll("'", "&#039;");
 }
 
+function createNextLayoutCode(site: { name: string; summary: string }) {
+  return `import type { Metadata } from "next";
+import type { ReactNode } from "react";
+
+export const metadata: Metadata = {
+  title: ${JSON.stringify(site.name)},
+  description: ${JSON.stringify(site.summary)}
+};
+
+export default function RootLayout({
+  children
+}: Readonly<{
+  children: ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`;
+}
+
 function createNextPageCode(site: {
   name: string;
   industry: string;
@@ -2010,6 +2255,7 @@ function createNextPageCode(site: {
   headline: string;
   prompt: string;
   summary: string;
+  navLinks: Array<{ label: string; href: string }>;
   sections: Array<{ title: string; copy: string }>;
 }) {
   const firstSectionId = slugify(site.sections[0]?.title || "sections");
@@ -2017,6 +2263,7 @@ function createNextPageCode(site: {
   return `import "./generated-site.css";
 import GeneratedSiteClient from "./generated-site.client";
 
+const navLinks = ${JSON.stringify(site.navLinks, null, 2)};
 const sections = ${JSON.stringify(site.sections, null, 2)};
 
 export default function Page() {
@@ -2025,6 +2272,12 @@ export default function Page() {
       <GeneratedSiteClient />
       <header className="site-header">
         <span className="logo">${escapeJsxText(site.name)}</span>
+        <nav className="site-nav" aria-label="${escapeJsxAttribute(site.name)} pages">
+          {navLinks.map((link) => (
+            <a href={link.href} key={link.href}>{link.label}</a>
+          ))}
+          <a href="#contact">Start</a>
+        </nav>
       </header>
 
       <main>
@@ -2052,7 +2305,7 @@ export default function Page() {
 
         <section className="section-grid" id="${firstSectionId}">
           {sections.map((section, index) => (
-            <article key={section.title}>
+            <article id={section.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")} key={section.title}>
               <span>{String(index + 1).padStart(2, "0")}</span>
               <h2>{section.title}</h2>
               <p>{section.copy}</p>
@@ -2191,13 +2444,30 @@ function createGeneratedCss(palette: Palette) {
         min-height: 76px;
         display: flex;
         align-items: center;
-        justify-content: flex-start;
+        justify-content: space-between;
+        gap: 18px;
       }
       .logo {
         display: inline-flex;
         font-size: 1.15rem;
         font-weight: 900;
         text-decoration: none;
+      }
+      .site-nav {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        gap: 10px 18px;
+      }
+      .site-nav a {
+        color: var(--muted);
+        font-size: 0.92rem;
+        font-weight: 850;
+        text-decoration: none;
+      }
+      .site-nav a:hover {
+        color: var(--primary);
       }
       .button {
         text-decoration: none;
@@ -2362,6 +2632,11 @@ function createGeneratedCss(palette: Palette) {
       @media (max-width: 820px) {
         .site-header {
           padding: 18px 0;
+          align-items: flex-start;
+          flex-direction: column;
+        }
+        .site-nav {
+          justify-content: flex-start;
         }
         .hero,
         .section-grid,

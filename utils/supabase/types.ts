@@ -33,6 +33,18 @@ export type BallzPage = {
   updated_at: string;
 };
 
+export type BallzLayout = {
+  id: string;
+  user_id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  layout_code: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type BallzTemplate = {
   id: string;
   user_id: string;
